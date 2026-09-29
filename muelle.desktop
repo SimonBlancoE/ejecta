@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Muelle
+GenericName=Unidades extraíbles
+Comment=Monta, abre y expulsa unidades USB desde la bandeja
+Exec=muelle
+Icon=drive-removable-media
+Categories=System;Utility;
+NoDisplay=true
