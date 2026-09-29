@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: arch,         image: "archlinux:latest" }
+          - { distro: fedora,       image: "fedora:latest" }
+          - { distro: debian,       image: "debian:trixie" }
+          - { distro: ubuntu,       image: "ubuntu:latest" }
+          - { distro: ubuntu-noble, image: "ubuntu:24.04" }
+          - { distro: opensuse,     image: "opensuse/tumbleweed:latest" }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh ci/build-in-container.sh ${{ matrix.distro }}

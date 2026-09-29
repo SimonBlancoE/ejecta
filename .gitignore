@@ -1,2 +1,5 @@
 muelle
+muelle.service
+locale/
 *.o
+.build-flags

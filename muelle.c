@@ -1,17 +1,23 @@
 /*
- * Muelle — unidades extraíbles en la bandeja del sistema.
+ * Muelle — removable drives in the system tray.
  *
- * Icono StatusNotifierItem (bandeja de Noctalia) con:
- *   - clic izquierdo: panel flotante (layer-shell) con las unidades, su
- *     información y acciones básicas;
- *   - clic derecho: menú completo (dbusmenu) con acciones y preferencias;
- *   - notificaciones al conectar un dispositivo (preguntar si montar) y,
- *     opcionalmente, al montarlo (preguntar si abrir el gestor de archivos).
+ * A StatusNotifierItem (works with any SNI tray: Noctalia, Waybar, KDE…) with:
+ *   - left click: a floating panel (layer-shell on Wayland) listing drives,
+ *     their details and the basic actions;
+ *   - right click: a full menu (dbusmenu) with every action and the settings;
+ *   - notifications when a device is plugged in (ask to mount) and, optionally,
+ *     when it gets mounted (ask to open the file manager);
+ *   - when a drive can't be unmounted because it is busy, it names the
+ *     processes holding it and can close them and retry.
  *
- * Todo habla directamente con UDisks2 por D-Bus: no hay procesos auxiliares.
+ * Everything talks to UDisks2 over D-Bus directly: no helper processes.
+ *
+ * SPDX-License-Identifier: MIT
  */
 #include <gtk/gtk.h>
 #include <gio/gio.h>
+#include <glib/gi18n.h>
+#include <locale.h>
 #include <sys/statvfs.h>
 #include <string.h>
 #include <unistd.h>
@@ -22,18 +28,49 @@
 #include <stdlib.h>
 #include <limits.h>
 
-#define APP_ID      "org.muelle.Muelle"
+#ifndef VERSION
+#define VERSION "dev"
+#endif
+#ifndef LOCALEDIR
+#define LOCALEDIR "/usr/local/share/locale"
+#endif
+#define GETTEXT_PACKAGE "muelle"
+
+#define APP_ID      "io.github.SimonBlancoE.Muelle"
 #define APP_NAME    "Muelle"
 #define UD_NAME     "org.freedesktop.UDisks2"
 #define UD_IFACE(x) "org.freedesktop.UDisks2." x
 #define SNI_PATH    "/StatusNotifierItem"
 #define MENU_PATH   "/MenuBar"
 #define PANEL_W     420
+#define PANEL_GAP   8
 
-/* ---- gtk4-layer-shell (se enlaza la biblioteca; su API C es estable) ---- */
+/* ---- gtk4-layer-shell ---------------------------------------------------- */
+#if defined(NO_LAYER_SHELL)
+/* Built without gtk4-layer-shell: the panel is an ordinary window. */
+enum { LS_LAYER_TOP, LS_EDGE_LEFT, LS_EDGE_RIGHT, LS_EDGE_TOP, LS_EDGE_BOTTOM, LS_KB_ON_DEMAND };
+static gboolean gtk_layer_is_supported(void) { return FALSE; }
+static void gtk_layer_init_for_window(GtkWindow *w) {}
+static void gtk_layer_set_namespace(GtkWindow *w, const char *ns) {}
+static void gtk_layer_set_layer(GtkWindow *w, int layer) {}
+static void gtk_layer_set_anchor(GtkWindow *w, int edge, gboolean anchor) {}
+static void gtk_layer_set_margin(GtkWindow *w, int edge, int margin) {}
+static void gtk_layer_set_keyboard_mode(GtkWindow *w, int mode) {}
+static void gtk_layer_set_monitor(GtkWindow *w, GdkMonitor *m) {}
+#elif defined(HAVE_LAYER_SHELL_HEADER)
+#include <gtk4-layer-shell.h>
+#define LS_LAYER_TOP     GTK_LAYER_SHELL_LAYER_TOP
+#define LS_EDGE_LEFT     GTK_LAYER_SHELL_EDGE_LEFT
+#define LS_EDGE_RIGHT    GTK_LAYER_SHELL_EDGE_RIGHT
+#define LS_EDGE_TOP      GTK_LAYER_SHELL_EDGE_TOP
+#define LS_EDGE_BOTTOM   GTK_LAYER_SHELL_EDGE_BOTTOM
+#define LS_KB_ON_DEMAND  GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND
+#else
+/* Some distributions ship the library without its headers; the C API is
+ * small and stable, so declare what we use. */
 enum { LS_LAYER_TOP = 2 };
 enum { LS_EDGE_LEFT = 0, LS_EDGE_RIGHT = 1, LS_EDGE_TOP = 2, LS_EDGE_BOTTOM = 3 };
-enum { LS_KB_NONE = 0, LS_KB_EXCLUSIVE = 1, LS_KB_ON_DEMAND = 2 };
+enum { LS_KB_ON_DEMAND = 2 };
 extern gboolean gtk_layer_is_supported(void);
 extern void gtk_layer_init_for_window(GtkWindow *w);
 extern void gtk_layer_set_namespace(GtkWindow *w, const char *ns);
@@ -42,17 +79,19 @@ extern void gtk_layer_set_anchor(GtkWindow *w, int edge, gboolean anchor);
 extern void gtk_layer_set_margin(GtkWindow *w, int edge, int margin);
 extern void gtk_layer_set_keyboard_mode(GtkWindow *w, int mode);
 extern void gtk_layer_set_monitor(GtkWindow *w, GdkMonitor *m);
+#endif
 
 /* ------------------------------------------------------------------------ */
 
 typedef struct {
-    char *path;       /* bloque "volumen" (el cifrado, si lo es)            */
-    char *fs_path;    /* bloque con sistema de archivos (NULL si bloqueado) */
-    char *drive;      /* objeto Drive o NULL                                */
+    char *path;       /* the "volume" block (the encrypted one, if encrypted) */
+    char *fs_path;    /* block holding the filesystem (NULL while locked)     */
+    char *drive;      /* Drive object, or NULL                                */
+    char *loop;       /* Loop block it lives on (disk images), or NULL        */
     char *dev, *label, *drive_name, *fstype, *uuid, *bus, *serial, *mount;
     const char *icon;
     guint64 size;
-    gboolean encrypted, locked, readonly, removable, loop;
+    gboolean encrypted, locked, readonly, removable, named;
 } Vol;
 
 typedef enum { OP_MOUNT, OP_UNMOUNT, OP_UNLOCK, OP_LOCK, OP_EJECT, OP_POWEROFF, OP_LOOP_DELETE } OpKind;
@@ -60,13 +99,13 @@ typedef struct { OpKind kind; char *path, *mount; } Op;
 
 typedef struct {
     GPtrArray *ops;
-    char *vol_path;     /* volumen afectado (para estado "ocupado")      */
+    char *vol_path;     /* affected volume (for the "busy" state)        */
     char *passphrase;
-    char *what;         /* nombre legible del volumen / dispositivo      */
+    char *what;         /* human-readable volume / device name           */
     gboolean open_after, notify_safe;
     char *mount_point, *error;
-    gboolean busy_err;  /* falló porque algo lo está usando          */
-    int retry;          /* acción a repetir tras cerrar los procesos */
+    gboolean busy_err;  /* failed because something is using it          */
+    int retry;          /* action to repeat after closing the processes  */
 } Job;
 
 typedef enum { N_INSERT, N_OPEN, N_BUSY, N_INFO } NKind;
@@ -81,7 +120,7 @@ enum {
 };
 
 typedef struct {
-    int id, parent, action, toggle; /* toggle: -1 no, 0/1 estado */
+    int id, parent, action, toggle; /* toggle: -1 none, 0/1 state */
     char *label, *icon, *arg;
     gboolean enabled, separator, submenu;
 } MItem;
@@ -94,8 +133,9 @@ static struct {
     GHashTable *known, *mounted, *busy, *errors, *no_ask, *expanded, *notifs;
     gboolean baseline;
     guint refresh_id;
-    /* preferencias */
+    /* settings */
     gboolean notify_insert, ask_open, show_internal, always_icon;
+    char *panel_pos, *file_manager;
     /* SNI */
     char *sni_name;
     const char *status;
@@ -112,7 +152,7 @@ static struct {
 } M;
 
 /* ======================================================================== */
-/* utilidades                                                               */
+/* helpers                                                                  */
 
 static char *human_size(guint64 b)
 {
@@ -123,7 +163,7 @@ static void vol_free(Vol *v)
 {
     g_free(v->path); g_free(v->fs_path); g_free(v->drive); g_free(v->dev);
     g_free(v->label); g_free(v->drive_name); g_free(v->fstype); g_free(v->uuid);
-    g_free(v->bus); g_free(v->serial); g_free(v->mount); g_free(v);
+    g_free(v->bus); g_free(v->serial); g_free(v->mount); g_free(v->loop); g_free(v);
 }
 
 static Vol *vol_find(const char *path)
@@ -208,7 +248,7 @@ static gboolean user_mount_point(const char *m)
 }
 
 /* ======================================================================== */
-/* preferencias                                                             */
+/* settings (~/.config/muelle/muelle.ini)                                   */
 
 static char *config_path(void)
 {
@@ -226,14 +266,21 @@ static gboolean kf_bool(GKeyFile *kf, const char *key, gboolean def)
 static void config_load(void)
 {
     M.notify_insert = TRUE; M.ask_open = FALSE; M.show_internal = FALSE; M.always_icon = FALSE;
+    g_clear_pointer(&M.panel_pos, g_free);
+    g_clear_pointer(&M.file_manager, g_free);
     g_autofree char *p = config_path();
     GKeyFile *kf = g_key_file_new();
     if (g_key_file_load_from_file(kf, p, G_KEY_FILE_NONE, NULL)) {
-        M.notify_insert = kf_bool(kf, "preguntar_montar", M.notify_insert);
-        M.ask_open      = kf_bool(kf, "preguntar_abrir", M.ask_open);
-        M.show_internal = kf_bool(kf, "mostrar_internas", M.show_internal);
-        M.always_icon   = kf_bool(kf, "icono_siempre", M.always_icon);
+        /* the Spanish keys are read for compatibility with early versions */
+        M.notify_insert = kf_bool(kf, "ask_to_mount", kf_bool(kf, "preguntar_montar", M.notify_insert));
+        M.ask_open      = kf_bool(kf, "ask_to_open", kf_bool(kf, "preguntar_abrir", M.ask_open));
+        M.show_internal = kf_bool(kf, "show_internal", kf_bool(kf, "mostrar_internas", M.show_internal));
+        M.always_icon   = kf_bool(kf, "always_show_icon", kf_bool(kf, "icono_siempre", M.always_icon));
+        M.panel_pos     = g_key_file_get_string(kf, "muelle", "panel_position", NULL);
+        M.file_manager  = g_key_file_get_string(kf, "muelle", "file_manager", NULL);
+        if (M.file_manager) g_strstrip(M.file_manager);
     }
+    if (!M.panel_pos) M.panel_pos = g_strdup("auto");
     g_key_file_free(kf);
 }
 
@@ -244,17 +291,21 @@ static void config_save(void)
     g_mkdir_with_parents(d, 0700);
     GKeyFile *kf = g_key_file_new();
     g_key_file_set_comment(kf, NULL, NULL,
-        " Preferencias de Muelle (también editables desde su menú con clic derecho)", NULL);
-    g_key_file_set_boolean(kf, "muelle", "preguntar_montar", M.notify_insert);
-    g_key_file_set_boolean(kf, "muelle", "preguntar_abrir", M.ask_open);
-    g_key_file_set_boolean(kf, "muelle", "mostrar_internas", M.show_internal);
-    g_key_file_set_boolean(kf, "muelle", "icono_siempre", M.always_icon);
+        " Muelle settings. The booleans can also be toggled from the tray menu.\n"
+        " panel_position: auto | top-left | top-right | bottom-left | bottom-right\n"
+        " file_manager: command to open folders with (empty = system default)", NULL);
+    g_key_file_set_boolean(kf, "muelle", "ask_to_mount", M.notify_insert);
+    g_key_file_set_boolean(kf, "muelle", "ask_to_open", M.ask_open);
+    g_key_file_set_boolean(kf, "muelle", "show_internal", M.show_internal);
+    g_key_file_set_boolean(kf, "muelle", "always_show_icon", M.always_icon);
+    g_key_file_set_string(kf, "muelle", "panel_position", M.panel_pos);
+    g_key_file_set_string(kf, "muelle", "file_manager", M.file_manager ? M.file_manager : "");
     g_key_file_save_to_file(kf, p, NULL);
     g_key_file_free(kf);
 }
 
 /* ======================================================================== */
-/* recogida de volúmenes                                                    */
+/* collecting volumes                                                       */
 
 static int vol_cmp(gconstpointer a, gconstpointer b)
 {
@@ -273,7 +324,7 @@ static GPtrArray *collect_vols(void)
         if (!has_iface(p, UD_IFACE("Block"))) continue;
         if (uprop_bool(p, UD_IFACE("Block"), "HintIgnore")) continue;
         g_autofree char *backing = uprop_str(p, UD_IFACE("Block"), "CryptoBackingDevice");
-        if (backing) continue; /* el descifrado se muestra dentro de su volumen */
+        if (backing) continue; /* unlocked cleartext is shown inside its volume */
         gboolean fs = has_iface(p, UD_IFACE("Filesystem"));
         gboolean enc = has_iface(p, UD_IFACE("Encrypted"));
         if (!fs && !enc) continue;
@@ -281,7 +332,11 @@ static GPtrArray *collect_vols(void)
         Vol *v = g_new0(Vol, 1);
         v->path = g_strdup(p);
         v->drive = uprop_str(p, UD_IFACE("Block"), "Drive");
-        v->loop = has_iface(p, UD_IFACE("Loop"));
+        if (has_iface(p, UD_IFACE("Loop"))) v->loop = g_strdup(p);
+        else if (has_iface(p, UD_IFACE("Partition"))) {
+            char *table = uprop_str(p, UD_IFACE("Partition"), "Table");
+            if (table && has_iface(table, UD_IFACE("Loop"))) v->loop = table; else g_free(table);
+        }
         v->encrypted = enc;
         v->size = uprop_u64(p, UD_IFACE("Block"), "Size");
         v->readonly = uprop_bool(p, UD_IFACE("Block"), "ReadOnly");
@@ -292,7 +347,7 @@ static GPtrArray *collect_vols(void)
             char *clear = uprop_str(p, UD_IFACE("Encrypted"), "CleartextDevice");
             if (clear && has_iface(clear, UD_IFACE("Filesystem"))) v->fs_path = clear;
             else { g_free(clear); v->locked = clear == NULL; }
-            if (!v->fs_path && !v->locked) { vol_free(v); continue; } /* LVM u otro contenido */
+            if (!v->fs_path && !v->locked) { vol_free(v); continue; } /* LVM or other content */
         } else {
             v->fs_path = g_strdup(p);
         }
@@ -328,15 +383,19 @@ static GPtrArray *collect_vols(void)
             vol_free(v); continue;
         }
         if (v->removable && system && v->mount && !user_mount_point(v->mount)) {
-            vol_free(v); continue; /* p. ej. un disco externo que aloja el sistema */
+            vol_free(v); continue; /* e.g. an external disk the system runs from */
         }
 
         v->icon = optical ? "media-optical" : sd ? "media-flash-sd-mmc" :
-                  v->loop ? "media-optical" :
+                  v->loop ? "drive-removable-media" :
                   v->removable ? "drive-removable-media-usb" : "drive-harddisk";
+        v->named = v->label || v->drive_name;
         if (!v->label) {
             g_autofree char *sz = human_size(v->size);
-            v->label = v->drive_name ? g_strdup(v->drive_name) : g_strdup_printf("Volumen de %s", sz);
+            /* TRANSLATORS: fallback names of an unlabeled volume, e.g. "16 GB Volume" */
+            v->label = v->drive_name ? g_strdup(v->drive_name) :
+                       v->locked ? g_strdup_printf(_("%s Encrypted Volume"), sz) :
+                                   g_strdup_printf(_("%s Volume"), sz);
         }
         g_ptr_array_add(out, v);
     }
@@ -346,27 +405,25 @@ static GPtrArray *collect_vols(void)
 }
 
 /* ======================================================================== */
-/* notificaciones                                                           */
+/* notifications                                                            */
 
 static void ncx_free(NCtx *c) { g_free(c->path); g_free(c); }
 
-typedef NCtx NPending;
-
 static void notify_done(GObject *src, GAsyncResult *res, gpointer data)
 {
-    NPending *np = data;
+    NCtx *pending = data;
     GVariant *r = g_dbus_connection_call_finish(G_DBUS_CONNECTION(src), res, NULL);
     if (r) {
-        guint32 id; g_variant_get(r, "(u)", &id);
-        NCtx *c = g_new0(NCtx, 1);
-        c->kind = np->kind; c->retry = np->retry; c->path = np->path; np->path = NULL;
-        g_hash_table_replace(M.notifs, GUINT_TO_POINTER(id), c);
+        guint32 id;
+        g_variant_get(r, "(u)", &id);
+        g_hash_table_replace(M.notifs, GUINT_TO_POINTER(id), pending);
         g_variant_unref(r);
+    } else {
+        ncx_free(pending);
     }
-    g_free(np->path); g_free(np);
 }
 
-/* actions: pares clave/etiqueta terminados en NULL */
+/* actions: NULL-terminated key/label pairs */
 static void notify(NKind kind, const char *path, int retry, const char *icon, const char *summary,
                    const char *body, int timeout, const char *const *actions)
 {
@@ -375,15 +432,15 @@ static void notify(NKind kind, const char *path, int retry, const char *icon, co
     g_variant_builder_init(&ab, G_VARIANT_TYPE("as"));
     for (int i = 0; actions && actions[i]; i++) g_variant_builder_add(&ab, "s", actions[i]);
     g_variant_builder_init(&hb, G_VARIANT_TYPE("a{sv}"));
-    g_variant_builder_add(&hb, "{sv}", "desktop-entry", g_variant_new_string("muelle"));
+    g_variant_builder_add(&hb, "{sv}", "desktop-entry", g_variant_new_string(APP_ID));
     g_variant_builder_add(&hb, "{sv}", "category", g_variant_new_string("device"));
-    NPending *np = g_new0(NPending, 1);
-    np->kind = kind; np->retry = retry; np->path = g_strdup(path);
+    NCtx *pending = g_new0(NCtx, 1);
+    pending->kind = kind; pending->retry = retry; pending->path = g_strdup(path);
     g_dbus_connection_call(M.session, "org.freedesktop.Notifications", "/org/freedesktop/Notifications",
         "org.freedesktop.Notifications", "Notify",
         g_variant_new("(susssasa{sv}i)", APP_NAME, 0u, icon ? icon : "drive-removable-media",
                       summary, body ? body : "", &ab, &hb, timeout),
-        G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, -1, NULL, notify_done, np);
+        G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, -1, NULL, notify_done, pending);
 }
 
 static void notify_close_for(const char *path)
@@ -403,7 +460,7 @@ static void notify_close_for(const char *path)
 }
 
 /* ======================================================================== */
-/* trabajos (operaciones UDisks en un hilo, llamadas síncronas en orden)    */
+/* jobs: UDisks operations run in order, with sync calls, in a worker thread */
 
 static void schedule_refresh(void);
 static void do_action(int action, const char *path);
@@ -447,14 +504,14 @@ static char *friendly_error(GError *e)
     g_autofree char *remote = g_dbus_error_get_remote_error(e);
     g_dbus_error_strip_remote_error(e);
     if (remote && g_str_has_suffix(remote, ".DeviceBusy"))
-        return g_strdup("El dispositivo está en uso: cierra los programas y ventanas que lo usen.");
+        return g_strdup(_("The device is in use: close the programs and windows using it."));
     if (remote && g_str_has_suffix(remote, ".NotAuthorizedDismissed"))
-        return g_strdup("Autorización cancelada.");
+        return g_strdup(_("Authorization cancelled."));
     if (remote && (g_str_has_suffix(remote, ".NotAuthorized") ||
                    g_str_has_suffix(remote, ".NotAuthorizedCanObtain")))
-        return g_strdup("No tienes permiso para esta operación.");
+        return g_strdup(_("You are not allowed to do this."));
     if (e->message && strstr(e->message, "passphrase"))
-        return g_strdup("Contraseña incorrecta.");
+        return g_strdup(_("Wrong passphrase."));
     return g_strdup(e->message);
 }
 
@@ -486,7 +543,7 @@ static void job_thread(GTask *task, gpointer src, gpointer data, GCancellable *c
             g_autofree char *remote = g_dbus_error_get_remote_error(e);
             gboolean benign = remote && (g_str_has_suffix(remote, ".AlreadyMounted") ||
                                          g_str_has_suffix(remote, ".NotMounted"));
-            /* Apagar puede fallar en lectores que no lo soportan: ya es seguro retirar. */
+            /* Power-off fails on readers that don't support it: removal is already safe. */
             if (o->kind == OP_POWEROFF || o->kind == OP_EJECT) benign = TRUE;
             if (!benign) {
                 j->busy_err = (o->kind == OP_UNMOUNT || o->kind == OP_LOCK) &&
@@ -508,19 +565,45 @@ static void job_thread(GTask *task, gpointer src, gpointer data, GCancellable *c
 static void open_path(const char *dir)
 {
     if (!dir) return;
-    g_autofree char *uri = g_filename_to_uri(dir, NULL, NULL);
-    if (!uri) return;
-    GdkAppLaunchContext *ctx = gdk_display_get_app_launch_context(gdk_display_get_default());
     GError *e = NULL;
-    if (!g_app_info_launch_default_for_uri(uri, G_APP_LAUNCH_CONTEXT(ctx), &e)) {
-        g_warning("no se pudo abrir %s: %s", dir, e->message);
+    if (M.file_manager && *M.file_manager) {
+        char **argv = NULL;
+        if (g_shell_parse_argv(M.file_manager, NULL, &argv, &e)) {
+            GStrvBuilder *b = g_strv_builder_new();
+            g_strv_builder_addv(b, (const char **)argv);
+            g_strv_builder_add(b, dir);
+            g_auto(GStrv) full = g_strv_builder_end(b);
+            g_strv_builder_unref(b);
+            g_spawn_async(NULL, full, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &e);
+            g_strfreev(argv);
+        }
+    } else {
+        g_autofree char *uri = g_filename_to_uri(dir, NULL, NULL);
+        GdkAppLaunchContext *ctx = gdk_display_get_app_launch_context(gdk_display_get_default());
+        if (uri) g_app_info_launch_default_for_uri(uri, G_APP_LAUNCH_CONTEXT(ctx), &e);
+        g_object_unref(ctx);
+    }
+    if (e) {
+        g_warning("could not open %s: %s", dir, e->message);
         g_error_free(e);
     }
-    g_object_unref(ctx);
+}
+
+/* Whether block p is on the same physical device (or disk image) as v. */
+static gboolean same_device(const char *p, Vol *v)
+{
+    if (v->drive) {
+        g_autofree char *d = uprop_str(p, UD_IFACE("Block"), "Drive");
+        return d && !strcmp(d, v->drive);
+    }
+    if (!v->loop) return !strcmp(p, v->path);
+    if (!strcmp(p, v->loop)) return TRUE;
+    g_autofree char *table = uprop_str(p, UD_IFACE("Partition"), "Table");
+    return table && !strcmp(table, v->loop);
 }
 
 /* ======================================================================== */
-/* procesos que bloquean una unidad                                         */
+/* processes holding a drive busy                                           */
 
 static void blocker_free(Blocker *b) { g_free(b->name); g_free(b->why); g_free(b); }
 
@@ -554,7 +637,7 @@ static int blocker_cmp(gconstpointer a, gconstpointer b)
     return (*(Blocker **)a)->pid - (*(Blocker **)b)->pid;
 }
 
-/* Procesos (legibles por este usuario) con algo abierto bajo los puntos de montaje. */
+/* Processes (readable by this user) with something open under the mount points. */
 static GPtrArray *find_blockers(char **mounts)
 {
     GPtrArray *out = g_ptr_array_new_with_free_func((GDestroyNotify)blocker_free);
@@ -604,11 +687,12 @@ static GPtrArray *find_blockers(char **mounts)
         if (!cwd && !exe && !nfiles && !mapped) continue;
 
         GString *why = g_string_new(NULL);
-        if (nfiles == 1) g_string_append_printf(why, "archivo abierto: %s", file);
-        else if (nfiles > 1) g_string_append_printf(why, "%d archivos abiertos (%s…)", nfiles, file);
-        if (cwd) g_string_append_printf(why, "%scarpeta actual dentro de la unidad", why->len ? "; " : "");
-        if (exe) g_string_append_printf(why, "%sse ejecuta desde la unidad", why->len ? "; " : "");
-        if (mapped) g_string_append(why, "tiene un archivo de la unidad cargado en memoria");
+        if (nfiles == 1) g_string_append_printf(why, _("open file: %s"), file);
+        else if (nfiles > 1)
+            g_string_append_printf(why, ngettext("%d open file (%s…)", "%d open files (%s…)", nfiles), nfiles, file);
+        if (cwd) g_string_append_printf(why, "%s%s", why->len ? "; " : "", _("working directory is on the drive"));
+        if (exe) g_string_append_printf(why, "%s%s", why->len ? "; " : "", _("running from the drive"));
+        if (mapped) g_string_append(why, _("has a file from the drive loaded in memory"));
         Blocker *b = g_new0(Blocker, 1);
         b->pid = (int)pid;
         b->name = proc_name(pid);
@@ -620,16 +704,15 @@ static GPtrArray *find_blockers(char **mounts)
     return out;
 }
 
-/* Puntos de montaje del volumen o, si whole_drive, de todo su dispositivo. */
+/* Mount points of the volume or, with whole_drive, of its whole device. */
 static char **vol_mounts(Vol *v, gboolean whole_drive)
 {
     GPtrArray *a = g_ptr_array_new();
-    if (whole_drive && v->drive && M.ud) {
+    if (whole_drive && (v->drive || v->loop) && M.ud) {
         GList *objs = g_dbus_object_manager_get_objects(M.ud);
         for (GList *l = objs; l; l = l->next) {
             const char *p = g_dbus_object_get_object_path(l->data);
-            g_autofree char *d = uprop_str(p, UD_IFACE("Block"), "Drive");
-            if (!d || strcmp(d, v->drive)) continue;
+            if (!same_device(p, v)) continue;
             g_autofree char *clear = has_iface(p, UD_IFACE("Encrypted")) ?
                                      uprop_str(p, UD_IFACE("Encrypted"), "CleartextDevice") : NULL;
             char *m = first_mount(clear ? clear : p);
@@ -656,7 +739,7 @@ static gboolean pid_alive(int pid)
 
 typedef struct { GArray *pids; int retry, ticks; char *path; } Killer;
 
-/* SIGTERM y, si a los 3 s sigue vivo, SIGKILL; después repite la acción. */
+/* SIGTERM first; SIGKILL whatever is still alive after 3 s; then retry. */
 static gboolean kill_tick(gpointer d)
 {
     Killer *k = d;
@@ -692,8 +775,9 @@ static void kill_blockers(GPtrArray *bl, int retry, const char *path)
         }
     }
     if (fail) {
-        g_autofree char *body = g_strdup_printf("%s: pertenecen a otro usuario o al sistema.", fail->str);
-        notify(N_INFO, NULL, 0, "dialog-error", "No se pudieron cerrar algunos procesos", body, 8000, NULL);
+        /* TRANSLATORS: %s is a list like "foo (PID 12), bar (PID 34)" */
+        g_autofree char *body = g_strdup_printf(_("%s: they belong to another user or to the system."), fail->str);
+        notify(N_INFO, NULL, 0, "dialog-error", _("Some processes could not be closed"), body, 8000, NULL);
         g_string_free(fail, TRUE);
     }
     g_hash_table_add(M.busy, g_strdup(path));
@@ -702,15 +786,16 @@ static void kill_blockers(GPtrArray *bl, int retry, const char *path)
     g_timeout_add(250, kill_tick, k);
 }
 
+/* Unmounting only needs this volume free; anything else frees the whole device. */
 static void kill_for_vol(Vol *v, int retry)
 {
-    g_auto(GStrv) ms = vol_mounts(v, retry == A_EJECT);
+    g_auto(GStrv) ms = vol_mounts(v, retry != A_UNMOUNT);
     GPtrArray *bl = find_blockers(ms);
     if (bl->len) kill_blockers(bl, retry, v->path);
     else if (retry) do_action(retry, v->path);
     else {
-        g_autofree char *body = g_strdup_printf("Ningún proceso tuyo está usando «%s».", v->label);
-        notify(N_INFO, NULL, 0, "dialog-information", "Nada que cerrar", body, 5000, NULL);
+        g_autofree char *body = g_strdup_printf(_("None of your processes is using “%s”."), v->label);
+        notify(N_INFO, NULL, 0, "dialog-information", _("Nothing to close"), body, 5000, NULL);
     }
     g_ptr_array_unref(bl);
 }
@@ -721,25 +806,27 @@ static void busy_report(Vol *v, int retry, const char *what)
     GPtrArray *bl = find_blockers(ms);
     GString *body = g_string_new(NULL);
     if (bl->len) {
-        g_string_append(body, "Lo están usando:");
+        g_string_append(body, _("It is being used by:"));
         for (guint i = 0; i < bl->len && i < 6; i++) {
             Blocker *b = bl->pdata[i];
             g_string_append_printf(body, "\n• %s (PID %d): %s", b->name, b->pid, b->why);
         }
-        if (bl->len > 6) g_string_append_printf(body, "\n… y %u más", bl->len - 6);
+        if (bl->len > 6)
+            g_string_append_printf(body, ngettext("\n… and %u more", "\n… and %u more", bl->len - 6), bl->len - 6);
     } else {
-        g_string_append(body, "Ningún proceso tuyo lo está usando: puede ser un proceso del sistema "
-                              "o de otro usuario (un indexador, una copia de seguridad…).");
+        g_string_append(body, _("None of your processes is using it: it may be a system process "
+                                "or another user's (an indexer, a backup…)."));
     }
     g_hash_table_replace(M.errors, g_strdup(v->path), bl->len
-        ? g_strdup_printf("En uso por %u proceso%s: mira la lista en los detalles.", bl->len, bl->len > 1 ? "s" : "")
-        : g_strdup("En uso por un proceso que no es tuyo (del sistema o de otro usuario)."));
+        ? g_strdup_printf(ngettext("In use by %u process: see the list in the details.",
+                                   "In use by %u processes: see the list in the details.", bl->len), bl->len)
+        : g_strdup(_("In use by a process that isn't yours (system or another user).")));
     g_hash_table_add(M.expanded, g_strdup(v->path));
-    g_autofree char *sum = g_strdup_printf(retry == A_EJECT ? "No se puede expulsar «%s»" :
-                                           "No se puede desmontar «%s»", what);
-    static const char *const kill_acts[] = { "kill", "Cerrar procesos y reintentar", "show", "Ver detalles", NULL };
-    static const char *const retry_acts[] = { "retry", "Reintentar", "show", "Ver detalles", NULL };
-    notify(N_BUSY, v->path, retry, "dialog-warning", sum, body->str, 0, bl->len ? kill_acts : retry_acts);
+    g_autofree char *sum = g_strdup_printf(retry == A_EJECT ? _("Can't eject “%s”") : _("Can't unmount “%s”"), what);
+    const char *kill_acts[] = { "kill", _("Close processes and retry"), "show", _("Show details"), NULL };
+    const char *retry_acts[] = { "retry", _("Retry"), "show", _("Show details"), NULL };
+    notify(N_BUSY, v->path, retry, "dialog-warning", sum, body->str, 0,
+           (const char *const *)(bl->len ? kill_acts : retry_acts));
     g_string_free(body, TRUE);
     g_ptr_array_unref(bl);
 }
@@ -759,8 +846,8 @@ static void job_done(GObject *src, GAsyncResult *res, gpointer data)
         g_hash_table_remove(M.errors, j->vol_path);
         if (j->open_after) open_path(j->mount_point);
         if (j->notify_safe) {
-            g_autofree char *b = g_strdup_printf("Ya puedes retirar «%s» con seguridad.", j->what);
-            notify(N_INFO, NULL, 0, "drive-removable-media", "Dispositivo expulsado", b, 5000, NULL);
+            g_autofree char *b = g_strdup_printf(_("“%s” can now be safely removed."), j->what);
+            notify(N_INFO, NULL, 0, "drive-removable-media", _("Device ejected"), b, 5000, NULL);
         }
     }
     job_free(j);
@@ -779,16 +866,14 @@ static void job_run(Job *j)
     schedule_refresh();
 }
 
-/* Añade al trabajo el desmontaje y bloqueo de todo lo que cuelga de un Drive. */
-static void plan_release_drive(Job *j, const char *drive, gboolean *found_any)
+/* Adds to the job the unmounting and locking of everything on v's device. */
+static void plan_release(Job *j, Vol *v)
 {
     GList *objs = g_dbus_object_manager_get_objects(M.ud);
     GPtrArray *locks = g_ptr_array_new_with_free_func(g_free);
     for (GList *l = objs; l; l = l->next) {
         const char *p = g_dbus_object_get_object_path(l->data);
-        g_autofree char *d = uprop_str(p, UD_IFACE("Block"), "Drive");
-        if (!d || strcmp(d, drive)) continue;
-        if (found_any) *found_any = TRUE;
+        if (!same_device(p, v)) continue;
         if (has_iface(p, UD_IFACE("Encrypted"))) {
             g_autofree char *clear = uprop_str(p, UD_IFACE("Encrypted"), "CleartextDevice");
             if (clear) {
@@ -828,7 +913,7 @@ static void act_unlock(Vol *v, const char *pass)
     Job *j = job_new(v->path, v->label);
     j->passphrase = g_strdup(pass);
     job_add(j, OP_UNLOCK, v->path);
-    job_add(j, OP_MOUNT, NULL); /* NULL = el dispositivo recién descifrado */
+    job_add(j, OP_MOUNT, NULL); /* NULL = the device that was just unlocked */
     job_run(j);
 }
 
@@ -848,19 +933,17 @@ static void act_eject(Vol *v)
     Job *j = job_new(v->path, v->drive_name ? v->drive_name : v->label);
     j->notify_safe = TRUE;
     j->retry = A_EJECT;
+    plan_release(j, v);
     if (v->drive) {
-        plan_release_drive(j, v->drive, NULL);
         if (uprop_bool(v->drive, UD_IFACE("Drive"), "Ejectable")) job_add(j, OP_EJECT, v->drive);
         if (uprop_bool(v->drive, UD_IFACE("Drive"), "CanPowerOff")) job_add(j, OP_POWEROFF, v->drive);
-    } else {
-        if (v->mount) job_add_unmount(j, v->fs_path, v->mount);
-        if (v->encrypted && !v->locked) job_add(j, OP_LOCK, v->path);
-        if (v->loop) job_add(j, OP_LOOP_DELETE, v->path);
+    } else if (v->loop) {
+        job_add(j, OP_LOOP_DELETE, v->loop);
     }
     if (!j->ops->len) {
-        /* Nada que hacer: sin montar y sin poder apagarse → ya se puede quitar. */
-        g_autofree char *b = g_strdup_printf("«%s» no está en uso: puedes retirarlo.", j->what);
-        notify(N_INFO, NULL, 0, "drive-removable-media", "Listo para retirar", b, 5000, NULL);
+        /* Nothing to do: not mounted and can't be powered off, so it can be pulled already. */
+        g_autofree char *b = g_strdup_printf(_("“%s” is not in use: you can remove it."), j->what);
+        notify(N_INFO, NULL, 0, "drive-removable-media", _("Ready to remove"), b, 5000, NULL);
         job_free(j);
         return;
     }
@@ -868,7 +951,7 @@ static void act_eject(Vol *v)
 }
 
 /* ======================================================================== */
-/* panel (clic izquierdo)                                                   */
+/* panel (left click)                                                       */
 
 static void panel_hide(void)
 {
@@ -908,10 +991,9 @@ static GtkWidget *mk_label(const char *text, const char *cls, gboolean wrap)
     if (wrap) {
         gtk_label_set_wrap(GTK_LABEL(l), TRUE);
         gtk_label_set_wrap_mode(GTK_LABEL(l), PANGO_WRAP_WORD_CHAR);
-        gtk_label_set_max_width_chars(GTK_LABEL(l), 1); /* ocupa el ancho asignado, no más */
+        gtk_label_set_max_width_chars(GTK_LABEL(l), 1); /* take the allocated width, no more */
         gtk_widget_set_hexpand(l, TRUE);
-    }
-    else {
+    } else {
         gtk_label_set_ellipsize(GTK_LABEL(l), PANGO_ELLIPSIZE_END);
         gtk_label_set_max_width_chars(GTK_LABEL(l), 1);
     }
@@ -926,7 +1008,7 @@ static void on_toggle_details(GtkToggleButton *b, gpointer rev)
     if (on) g_hash_table_add(M.expanded, g_strdup(path)); else g_hash_table_remove(M.expanded, path);
     gtk_revealer_set_reveal_child(GTK_REVEALER(rev), on);
     Vol *v = vol_find(path);
-    if (on && v && v->mount) schedule_refresh(); /* rellena la lista de procesos */
+    if (on && v && v->mount) schedule_refresh(); /* fills in the process list */
 }
 
 static void on_unlock_activate(GtkWidget *entry, gpointer data)
@@ -965,7 +1047,7 @@ static const char *bus_name(const char *bus)
 {
     if (!bus) return NULL;
     if (!strcmp(bus, "usb")) return "USB";
-    if (!strcmp(bus, "sdio")) return "Lector de tarjetas (SD)";
+    if (!strcmp(bus, "sdio")) return _("SD card reader");
     if (!strcmp(bus, "ieee1394")) return "FireWire";
     if (!strcmp(bus, "scsi")) return "SCSI / SATA";
     return bus;
@@ -982,25 +1064,25 @@ static void on_kill_pid(GtkButton *b, gpointer d)
     g_ptr_array_unref(bl);
 }
 
-/* Lista de procesos que usan la unidad, con botones para cerrarlos. */
+/* List of the processes using the drive, with buttons to close them. */
 static GtkWidget *procs_section(Vol *v)
 {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_widget_set_margin_top(box, 8);
     GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    GtkWidget *hl = mk_label("Procesos que la usan", "m-key", FALSE);
+    GtkWidget *hl = mk_label(_("Processes using this device"), "m-key", FALSE);
     gtk_label_set_max_width_chars(GTK_LABEL(hl), -1);
     gtk_widget_set_hexpand(hl, TRUE);
     gtk_box_append(GTK_BOX(head), hl);
-    GtkWidget *upd = mk_button(NULL, "view-refresh", "Volver a buscar", A_REFRESH, v->path, FALSE);
+    GtkWidget *upd = mk_button(NULL, "view-refresh", _("Look again"), A_REFRESH, v->path, FALSE);
     gtk_widget_add_css_class(upd, "m-small");
     gtk_box_append(GTK_BOX(head), upd);
     gtk_box_append(GTK_BOX(box), head);
 
-    char *ms[] = { v->mount, NULL };
+    g_auto(GStrv) ms = vol_mounts(v, TRUE);
     GPtrArray *bl = find_blockers(ms);
     if (!bl->len)
-        gtk_box_append(GTK_BOX(box), mk_label("Ningún proceso tuyo la está usando.", "m-dim", TRUE));
+        gtk_box_append(GTK_BOX(box), mk_label(_("None of your processes is using it."), "m-dim", TRUE));
     for (guint i = 0; i < bl->len; i++) {
         Blocker *b = bl->pdata[i];
         GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -1013,10 +1095,10 @@ static GtkWidget *procs_section(Vol *v)
         gtk_box_append(GTK_BOX(txt), nl);
         gtk_box_append(GTK_BOX(txt), mk_label(b->why, "m-dim", TRUE));
         gtk_box_append(GTK_BOX(row), txt);
-        GtkWidget *k = gtk_button_new_with_label("Cerrar");
+        GtkWidget *k = gtk_button_new_with_label(_("Close"));
         gtk_widget_add_css_class(k, "m-danger");
         gtk_widget_set_valign(k, GTK_ALIGN_CENTER);
-        gtk_widget_set_tooltip_text(k, "Pide al proceso que se cierre; si no responde en 3 s, lo fuerza");
+        gtk_widget_set_tooltip_text(k, _("Asks the process to quit; if it doesn't within 3 s, it is forced"));
         g_object_set_data(G_OBJECT(k), "pid", GINT_TO_POINTER(b->pid));
         g_object_set_data_full(G_OBJECT(k), "path", g_strdup(v->path), g_free);
         g_signal_connect(k, "clicked", G_CALLBACK(on_kill_pid), NULL);
@@ -1024,8 +1106,8 @@ static GtkWidget *procs_section(Vol *v)
         gtk_box_append(GTK_BOX(box), row);
     }
     if (bl->len > 1) {
-        GtkWidget *all = mk_button("Cerrar todos", NULL,
-            "Pide a todos que se cierren; los que no respondan en 3 s se fuerzan", A_KILL_ALL, v->path, FALSE);
+        GtkWidget *all = mk_button(_("Close all"), NULL,
+            _("Asks them all to quit; the ones still running after 3 s are forced"), A_KILL_ALL, v->path, FALSE);
         gtk_widget_add_css_class(all, "m-danger");
         gtk_widget_set_halign(all, GTK_ALIGN_END);
         gtk_box_append(GTK_BOX(box), all);
@@ -1041,7 +1123,7 @@ static GtkWidget *vol_card(Vol *v)
     gtk_widget_add_css_class(card, "m-card");
     if (v->mount) gtk_widget_add_css_class(card, "mounted");
 
-    /* cabecera: icono · textos · botones */
+    /* header: icon · name and state · details toggle */
     GtkWidget *top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget *img = gtk_image_new_from_icon_name(v->icon);
     gtk_image_set_pixel_size(GTK_IMAGE(img), 32);
@@ -1052,8 +1134,8 @@ static GtkWidget *vol_card(Vol *v)
     gtk_widget_set_valign(txt, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(txt), mk_label(v->label, "m-name", FALSE));
     g_autofree char *sz = human_size(v->size);
-    const char *state = busy ? "trabajando…" : v->locked ? "cifrado, bloqueado" :
-                        v->mount ? "montado" : "sin montar";
+    const char *state = busy ? _("working…") : v->locked ? _("encrypted, locked") :
+                        v->mount ? _("mounted") : _("not mounted");
     g_autofree char *sub = g_strdup_printf("%s · %s%s%s", sz, state,
                                            v->fstype ? " · " : "", v->fstype ? v->fstype : "");
     gtk_box_append(GTK_BOX(txt), mk_label(sub, "m-dim", FALSE));
@@ -1063,11 +1145,11 @@ static GtkWidget *vol_card(Vol *v)
     gtk_button_set_icon_name(GTK_BUTTON(info), "dialog-information");
     gtk_widget_add_css_class(info, "m-btn");
     gtk_widget_set_valign(info, GTK_ALIGN_CENTER);
-    gtk_widget_set_tooltip_text(info, "Detalles");
+    gtk_widget_set_tooltip_text(info, _("Details"));
     gtk_box_append(GTK_BOX(top), info);
     gtk_box_append(GTK_BOX(card), top);
 
-    /* acciones */
+    /* actions */
     GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_set_homogeneous(GTK_BOX(btns), TRUE);
     if (busy) {
@@ -1076,21 +1158,26 @@ static GtkWidget *vol_card(Vol *v)
         gtk_box_set_homogeneous(GTK_BOX(btns), FALSE);
         gtk_box_append(GTK_BOX(btns), sp);
     } else if (v->locked) {
-        gtk_box_append(GTK_BOX(btns), mk_button("Desbloquear", "dialog-password", "Pedir la contraseña, descifrar y montar", A_UNLOCK, v->path, TRUE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Unlock"), "dialog-password",
+            _("Ask for the passphrase, unlock and mount"), A_UNLOCK, v->path, TRUE));
     } else if (v->mount) {
-        gtk_box_append(GTK_BOX(btns), mk_button("Abrir", "folder-open", "Abrir en el gestor de archivos", A_OPEN, v->path, TRUE));
-        gtk_box_append(GTK_BOX(btns), mk_button("Desmontar", NULL,
-            "Cierra el volumen (deja de estar accesible) pero el dispositivo sigue conectado y encendido", A_UNMOUNT, v->path, FALSE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Open"), "folder-open",
+            _("Open in the file manager"), A_OPEN, v->path, TRUE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Unmount"), NULL,
+            _("Closes the volume (its files stop being accessible) but the device stays connected and powered"),
+            A_UNMOUNT, v->path, FALSE));
     } else {
-        gtk_box_append(GTK_BOX(btns), mk_button("Montar", NULL, "Hacer accesibles los archivos", A_MOUNT, v->path, TRUE));
-        gtk_box_append(GTK_BOX(btns), mk_button("Montar y abrir", "folder-open", "Montar y abrir en el gestor de archivos", A_OPEN, v->path, FALSE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Mount"), NULL, _("Make the files accessible"), A_MOUNT, v->path, TRUE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Mount & open"), "folder-open",
+            _("Mount and open in the file manager"), A_OPEN, v->path, FALSE));
     }
     if (!busy && (v->drive || v->loop))
-        gtk_box_append(GTK_BOX(btns), mk_button("Expulsar", "media-eject",
-            "Desmonta todo lo del dispositivo y lo apaga para que puedas retirarlo con seguridad", A_EJECT, v->path, FALSE));
+        gtk_box_append(GTK_BOX(btns), mk_button(_("Eject"), "media-eject",
+            _("Unmounts everything on the device and powers it off so you can remove it safely"),
+            A_EJECT, v->path, FALSE));
     gtk_box_append(GTK_BOX(card), btns);
 
-    /* ocupación */
+    /* usage */
     struct statvfs st;
     if (v->mount && statvfs(v->mount, &st) == 0 && st.f_blocks) {
         guint64 total = (guint64)st.f_blocks * st.f_frsize, avail = (guint64)st.f_bavail * st.f_frsize;
@@ -1100,21 +1187,24 @@ static GtkWidget *vol_card(Vol *v)
         gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(bar), GTK_LEVEL_BAR_OFFSET_LOW);
         gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(bar), GTK_LEVEL_BAR_OFFSET_HIGH);
         gtk_level_bar_remove_offset_value(GTK_LEVEL_BAR(bar), GTK_LEVEL_BAR_OFFSET_FULL);
-        gtk_level_bar_add_offset_value(GTK_LEVEL_BAR(bar), "m-full", 0.9);
+        /* a block takes the name of the lowest offset at or above the value */
+        gtk_level_bar_add_offset_value(GTK_LEVEL_BAR(bar), "m-ok", 0.9);
+        gtk_level_bar_add_offset_value(GTK_LEVEL_BAR(bar), "m-full", 1.0);
         gtk_box_append(GTK_BOX(card), bar);
         g_autofree char *fa = human_size(avail), *ft = human_size(total);
-        g_autofree char *u = g_strdup_printf("%s libres de %s  ·  %s", fa, ft, v->mount);
+        /* TRANSLATORS: "<free> free of <total>  ·  <mount point>" */
+        g_autofree char *u = g_strdup_printf(_("%s free of %s  ·  %s"), fa, ft, v->mount);
         GtkWidget *ul = mk_label(u, "m-dim", FALSE);
         gtk_label_set_ellipsize(GTK_LABEL(ul), PANGO_ELLIPSIZE_MIDDLE);
         gtk_box_append(GTK_BOX(card), ul);
     }
 
-    /* contraseña */
+    /* passphrase */
     if (v->locked && !busy && !g_strcmp0(M.unlock_target, v->path)) {
         GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
         GtkWidget *pe = gtk_password_entry_new();
         gtk_password_entry_set_show_peek_icon(GTK_PASSWORD_ENTRY(pe), TRUE);
-        g_object_set(pe, "placeholder-text", "Contraseña y Intro", "activates-default", FALSE, NULL);
+        g_object_set(pe, "placeholder-text", _("Passphrase, then Enter"), "activates-default", FALSE, NULL);
         gtk_widget_set_hexpand(pe, TRUE);
         g_object_set_data_full(G_OBJECT(pe), "path", g_strdup(v->path), g_free);
         g_signal_connect(pe, "activate", G_CALLBACK(on_unlock_activate), NULL);
@@ -1127,11 +1217,11 @@ static GtkWidget *vol_card(Vol *v)
         g_object_set_data(G_OBJECT(M.win), "focus", pe);
     }
 
-    /* error de la última operación */
+    /* error from the last operation */
     const char *err = g_hash_table_lookup(M.errors, v->path);
     if (err) gtk_box_append(GTK_BOX(card), mk_label(err, "m-error", TRUE));
 
-    /* detalles */
+    /* details */
     GtkWidget *rev = gtk_revealer_new();
     gtk_revealer_set_transition_type(GTK_REVEALER(rev), GTK_REVEALER_TRANSITION_TYPE_SLIDE_DOWN);
     GtkWidget *grid = gtk_grid_new();
@@ -1139,20 +1229,21 @@ static GtkWidget *vol_card(Vol *v)
     gtk_grid_set_row_spacing(GTK_GRID(grid), 3);
     gtk_widget_add_css_class(grid, "m-details");
     int r = 0;
-    details_row(GTK_GRID(grid), &r, "Dispositivo", v->drive_name);
-    details_row(GTK_GRID(grid), &r, "Conexión", v->loop ? "Imagen de disco (loop)" : bus_name(v->bus));
-    details_row(GTK_GRID(grid), &r, "Ruta", v->dev);
-    details_row(GTK_GRID(grid), &r, "Montado en", v->mount);
-    details_row(GTK_GRID(grid), &r, "Sistema de archivos", v->fstype);
+    details_row(GTK_GRID(grid), &r, _("Device"), v->drive_name);
+    details_row(GTK_GRID(grid), &r, _("Connection"), v->loop ? _("Disk image (loop)") : bus_name(v->bus));
+    details_row(GTK_GRID(grid), &r, _("Path"), v->dev);
+    details_row(GTK_GRID(grid), &r, _("Mounted at"), v->mount);
+    details_row(GTK_GRID(grid), &r, _("Filesystem"), v->fstype);
     details_row(GTK_GRID(grid), &r, "UUID", v->uuid);
-    details_row(GTK_GRID(grid), &r, "Nº de serie", v->serial);
-    details_row(GTK_GRID(grid), &r, "Tamaño", sz);
-    details_row(GTK_GRID(grid), &r, "Cifrado", v->encrypted ? (v->locked ? "LUKS, bloqueado" : "LUKS, desbloqueado") : NULL);
-    details_row(GTK_GRID(grid), &r, "Acceso", v->readonly ? "Solo lectura" : NULL);
+    details_row(GTK_GRID(grid), &r, _("Serial number"), v->serial);
+    details_row(GTK_GRID(grid), &r, _("Size"), sz);
+    details_row(GTK_GRID(grid), &r, _("Encryption"),
+                v->encrypted ? (v->locked ? _("LUKS, locked") : _("LUKS, unlocked")) : NULL);
+    details_row(GTK_GRID(grid), &r, _("Access"), v->readonly ? _("Read-only") : NULL);
     if (v->mount && !busy && g_hash_table_contains(M.expanded, v->path))
         gtk_grid_attach(GTK_GRID(grid), procs_section(v), 0, r++, 2, 1);
     if (v->mount) {
-        GtkWidget *copy = mk_button("Copiar ruta", "edit-copy", NULL, A_COPY, v->path, FALSE);
+        GtkWidget *copy = mk_button(_("Copy path"), "edit-copy", NULL, A_COPY, v->path, FALSE);
         gtk_widget_set_halign(copy, GTK_ALIGN_START);
         gtk_widget_set_margin_top(copy, 4);
         gtk_grid_attach(GTK_GRID(grid), copy, 1, r++, 1, 1);
@@ -1180,7 +1271,7 @@ static void panel_fill(void)
         gtk_image_set_pixel_size(GTK_IMAGE(img), 48);
         gtk_widget_set_opacity(img, 0.6);
         gtk_box_append(GTK_BOX(e), img);
-        GtkWidget *l = gtk_label_new("No hay unidades extraíbles conectadas");
+        GtkWidget *l = gtk_label_new(_("No removable drives connected"));
         gtk_widget_add_css_class(l, "m-dim");
         gtk_box_append(GTK_BOX(e), l);
         gtk_box_append(GTK_BOX(M.list), e);
@@ -1246,11 +1337,11 @@ static void panel_build(void)
     gtk_widget_set_size_request(panel, PANEL_W, -1);
 
     GtkWidget *head = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *title = mk_label("Unidades", "m-title", FALSE);
+    GtkWidget *title = mk_label(_("Drives"), "m-title", FALSE);
     gtk_label_set_max_width_chars(GTK_LABEL(title), -1);
     gtk_widget_set_hexpand(title, TRUE);
     gtk_box_append(GTK_BOX(head), title);
-    GtkWidget *all = mk_button(NULL, "media-eject", "Expulsar todas las unidades extraíbles", A_EJECT_ALL, NULL, FALSE);
+    GtkWidget *all = mk_button(NULL, "media-eject", _("Eject all removable drives"), A_EJECT_ALL, NULL, FALSE);
     g_object_set_data(G_OBJECT(M.win), "eject-all", all);
     gtk_box_append(GTK_BOX(head), all);
     gtk_box_append(GTK_BOX(panel), head);
@@ -1264,8 +1355,8 @@ static void panel_build(void)
     gtk_box_append(GTK_BOX(panel), scroll);
 
     gtk_box_append(GTK_BOX(panel), mk_label(
-        "Desmontar cierra el volumen; el dispositivo sigue conectado. "
-        "Expulsar (⏏) lo desmonta todo y lo apaga: después ya puedes quitarlo.", "m-hint", TRUE));
+        _("Unmount closes the volume; the device stays connected. "
+          "Eject (⏏) unmounts everything and powers it off: then you can pull it out."), "m-hint", TRUE));
 
     gtk_window_set_child(M.win, panel);
 
@@ -1279,38 +1370,50 @@ static void panel_build(void)
     g_signal_connect(M.win, "notify::is-active", G_CALLBACK(on_active), NULL);
 }
 
+/* Places the panel next to the tray: below a top bar, above a bottom one,
+ * horizontally centred on the icon. Without click coordinates (some trays
+ * don't send them) it uses the configured corner, top-right by default. */
+static void panel_place(int x, int y)
+{
+    GdkMonitor *mon = NULL;
+    GdkRectangle g = {0};
+    if (x >= 0 && y >= 0) {
+        GListModel *ms = gdk_display_get_monitors(gdk_display_get_default());
+        for (guint i = 0; i < g_list_model_get_n_items(ms) && !mon; i++) {
+            GdkMonitor *m = g_list_model_get_item(ms, i);
+            gdk_monitor_get_geometry(m, &g);
+            if (x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height) mon = m;
+            g_object_unref(m);
+        }
+    }
+    gboolean fixed = g_strcmp0(M.panel_pos, "auto") != 0;
+    if (!mon && !fixed && gtk_widget_get_visible(GTK_WIDGET(M.win))) return; /* keep where it is */
+
+    gboolean bottom = fixed ? g_str_has_prefix(M.panel_pos, "bottom") : mon && (y - g.y) > g.height / 2;
+    gboolean left = fixed && g_str_has_suffix(M.panel_pos, "left");
+    gtk_layer_set_monitor(M.win, mon);
+    gtk_layer_set_anchor(M.win, LS_EDGE_TOP, !bottom);
+    gtk_layer_set_anchor(M.win, LS_EDGE_BOTTOM, bottom);
+    gtk_layer_set_margin(M.win, bottom ? LS_EDGE_BOTTOM : LS_EDGE_TOP, PANEL_GAP);
+    if (mon && !fixed) {
+        int margin = CLAMP(x - g.x - PANEL_W / 2, PANEL_GAP, MAX(PANEL_GAP, g.width - PANEL_W - PANEL_GAP));
+        gtk_layer_set_anchor(M.win, LS_EDGE_LEFT, TRUE);
+        gtk_layer_set_anchor(M.win, LS_EDGE_RIGHT, FALSE);
+        gtk_layer_set_margin(M.win, LS_EDGE_LEFT, margin);
+    } else {
+        gtk_layer_set_anchor(M.win, LS_EDGE_LEFT, left);
+        gtk_layer_set_anchor(M.win, LS_EDGE_RIGHT, !left);
+        gtk_layer_set_margin(M.win, left ? LS_EDGE_LEFT : LS_EDGE_RIGHT, PANEL_GAP);
+    }
+}
+
 static void panel_show(int x, int y)
 {
     if (!M.win) panel_build();
     panel_fill();
     GtkWidget *all = g_object_get_data(G_OBJECT(M.win), "eject-all");
     gtk_widget_set_visible(all, M.vols->len > 0);
-    if (M.layer_ok) {
-        GdkMonitor *mon = NULL;
-        GdkRectangle g = {0};
-        if (x >= 0 && y >= 0) {
-            GListModel *ms = gdk_display_get_monitors(gdk_display_get_default());
-            for (guint i = 0; i < g_list_model_get_n_items(ms) && !mon; i++) {
-                GdkMonitor *m = g_list_model_get_item(ms, i);
-                gdk_monitor_get_geometry(m, &g);
-                if (x >= g.x && x < g.x + g.width && y >= g.y && y < g.y + g.height) mon = m;
-                g_object_unref(m);
-            }
-        }
-        gtk_layer_set_monitor(M.win, mon);
-        gtk_layer_set_anchor(M.win, LS_EDGE_TOP, TRUE);
-        gtk_layer_set_margin(M.win, LS_EDGE_TOP, 8);
-        if (mon) {
-            int left = CLAMP(x - g.x - PANEL_W / 2, 8, MAX(8, g.width - PANEL_W - 8));
-            gtk_layer_set_anchor(M.win, LS_EDGE_LEFT, TRUE);
-            gtk_layer_set_anchor(M.win, LS_EDGE_RIGHT, FALSE);
-            gtk_layer_set_margin(M.win, LS_EDGE_LEFT, left);
-        } else if (!gtk_widget_get_visible(GTK_WIDGET(M.win))) {
-            gtk_layer_set_anchor(M.win, LS_EDGE_LEFT, FALSE);
-            gtk_layer_set_anchor(M.win, LS_EDGE_RIGHT, TRUE);
-            gtk_layer_set_margin(M.win, LS_EDGE_RIGHT, 8);
-        }
-    }
+    if (M.layer_ok) panel_place(x, y);
     M.was_active = FALSE;
     gtk_window_present(M.win);
 }
@@ -1322,14 +1425,23 @@ static void panel_toggle(int x, int y)
 }
 
 /* ======================================================================== */
-/* estilo: colores de Noctalia (~/.config/gtk-4.0/colors.css) si existen    */
+/* style: follows the GTK theme; if ~/.config/gtk-4.0/colors.css has KDE-style
+ * *_breeze colors (written by KDE and by Noctalia) those are used instead,
+ * and reloaded when they change.                                           */
 
 static const char *CSS_DEFAULTS =
-    "@define-color m_bg #1b1424; @define-color m_fg #eee1fc; @define-color m_muted #b1a7c0;"
-    "@define-color m_accent #67e4d0; @define-color m_accent_fg #1b1424; @define-color m_border #393143;"
-    "@define-color m_error #ff6a9d;\n";
+    "@define-color m_bg #1e1e24; @define-color m_fg #eeeeee; @define-color m_muted #a9a9b3;"
+    "@define-color m_accent #62a0ea; @define-color m_accent_fg #ffffff; @define-color m_border #3a3a44;"
+    "@define-color m_error #f66151;\n";
 
-static const char *CSS_MAP =
+/* GTK4's built-in theme defines these; if a theme doesn't, the defaults stay. */
+static const char *CSS_THEME =
+    "@define-color m_bg @theme_bg_color; @define-color m_fg @theme_fg_color;"
+    "@define-color m_muted alpha(@theme_fg_color, 0.7); @define-color m_accent @theme_selected_bg_color;"
+    "@define-color m_accent_fg @theme_selected_fg_color; @define-color m_border @borders;"
+    "@define-color m_error @error_color;\n";
+
+static const char *CSS_BREEZE =
     "@define-color m_bg @theme_bg_color_breeze; @define-color m_fg @theme_text_color_breeze;"
     "@define-color m_muted @theme_fg_color_breeze; @define-color m_accent @theme_selected_bg_color_breeze;"
     "@define-color m_accent_fg @theme_selected_fg_color_breeze; @define-color m_border @borders_breeze;"
@@ -1365,19 +1477,26 @@ static const char *CSS_RULES =
     "button.m-primary:hover { background: shade(@m_accent, 1.08); }"
     "levelbar trough { border-radius: 4px; min-height: 6px; background: alpha(@m_fg, 0.1); border: none; }"
     "levelbar block { border-radius: 4px; min-height: 6px; border: none; }"
-    "levelbar block.filled { background: @m_accent; }"
+    "levelbar block.m-ok { background: @m_accent; }"
     "levelbar block.m-full { background: @m_error; }"
     "levelbar block.empty { background: transparent; }";
 
+static char *css_colors_path(void)
+{
+    return g_build_filename(g_get_user_config_dir(), "gtk-4.0", "colors.css", NULL);
+}
+
 static void css_load(void)
 {
-    g_autofree char *path = g_build_filename(g_get_user_config_dir(), "gtk-4.0", "colors.css", NULL);
+    g_autofree char *path = css_colors_path();
     g_autofree char *colors = NULL;
     GString *s = g_string_new(CSS_DEFAULTS);
     if (g_file_get_contents(path, &colors, NULL, NULL) && strstr(colors, "theme_selected_bg_color_breeze")) {
         g_string_append(s, colors);
         g_string_append_c(s, '\n');
-        g_string_append(s, CSS_MAP);
+        g_string_append(s, CSS_BREEZE);
+    } else {
+        g_string_append(s, CSS_THEME);
     }
     g_string_append(s, CSS_RULES);
     if (!M.css) {
@@ -1391,11 +1510,13 @@ static void css_load(void)
 
 static void on_css_changed(GFileMonitor *m, GFile *f, GFile *o, GFileMonitorEvent ev, gpointer d)
 {
-    if (ev == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT || ev == G_FILE_MONITOR_EVENT_CREATED) css_load();
+    if (ev == G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT || ev == G_FILE_MONITOR_EVENT_CREATED ||
+        ev == G_FILE_MONITOR_EVENT_DELETED)
+        css_load();
 }
 
 /* ======================================================================== */
-/* dbusmenu (clic derecho)                                                  */
+/* dbusmenu (right click)                                                   */
 
 static void mitem_free(MItem *m) { g_free(m->label); g_free(m->icon); g_free(m->arg); g_free(m); }
 
@@ -1426,45 +1547,46 @@ static void menu_build(void)
         Vol *v = M.vols->pdata[i];
         gboolean busy = g_hash_table_contains(M.busy, v->path);
         g_autofree char *sz = human_size(v->size);
-        g_autofree char *lbl = g_strdup_printf("%s  —  %s%s", v->label, sz,
-                                busy ? " (trabajando…)" : v->mount ? " (montado)" : v->locked ? " (bloqueado)" : "");
+        const char *state = busy ? _("working…") : v->mount ? _("mounted") : v->locked ? _("locked") : NULL;
+        g_autofree char *name = v->named ? g_strdup_printf("%s  —  %s", v->label, sz) : g_strdup(v->label);
+        g_autofree char *lbl = state ? g_strdup_printf("%s (%s)", name, state) : g_strdup(name);
         MItem *sub = madd(0, lbl, v->icon, A_NONE, NULL);
         sub->enabled = TRUE; sub->submenu = TRUE;
         int p = sub->id;
         if (v->mount) any_mounted = TRUE; else if (!v->locked) any_unmounted = TRUE;
         if (v->drive || v->loop) any_eject = TRUE;
-        if (busy) { madd(p, "Operación en curso…", NULL, A_NONE, NULL); continue; }
-        if (v->locked) madd(p, "Desbloquear y montar…", "dialog-password", A_UNLOCK, v->path);
-        else madd(p, "Abrir en el gestor de archivos", "folder-open", A_OPEN, v->path);
+        if (busy) { madd(p, _("Operation in progress…"), NULL, A_NONE, NULL); continue; }
+        if (v->locked) madd(p, _("Unlock and mount…"), "dialog-password", A_UNLOCK, v->path);
+        else madd(p, _("Open in the file manager"), "folder-open", A_OPEN, v->path);
         if (v->mount) {
-            madd(p, "Desmontar (sigue conectado)", "media-eject", A_UNMOUNT, v->path);
-            madd(p, "Copiar ruta de montaje", "edit-copy", A_COPY, v->path);
+            madd(p, _("Unmount (stays connected)"), "media-eject", A_UNMOUNT, v->path);
+            madd(p, _("Copy mount path"), "edit-copy", A_COPY, v->path);
         } else if (!v->locked) {
-            madd(p, "Montar", "drive-removable-media", A_MOUNT, v->path);
+            madd(p, _("Mount"), "drive-removable-media", A_MOUNT, v->path);
         }
-        if (v->encrypted && !v->locked && !v->mount) madd(p, "Bloquear", "changes-prevent", A_UNMOUNT, v->path);
-        if (v->drive || v->loop) madd(p, "Expulsar para retirarlo", "media-eject", A_EJECT, v->path);
+        if (v->encrypted && !v->locked && !v->mount) madd(p, _("Lock"), "changes-prevent", A_UNMOUNT, v->path);
+        if (v->drive || v->loop) madd(p, _("Eject to remove it"), "media-eject", A_EJECT, v->path);
         msep(p);
-        madd(p, "Ver detalles en el panel", "dialog-information", A_DETAILS, v->path);
-        if (v->mount) madd(p, "Cerrar los procesos que la usan", "process-stop", A_KILL_ALL, v->path);
+        madd(p, _("Show details in the panel"), "dialog-information", A_DETAILS, v->path);
+        if (v->mount) madd(p, _("Close the processes using it"), "process-stop", A_KILL_ALL, v->path);
         if (v->dev) { g_autofree char *t = g_strdup_printf("%s%s%s", v->dev, v->fstype ? " · " : "", v->fstype ? v->fstype : ""); madd(p, t, NULL, A_NONE, NULL); }
         if (v->mount) madd(p, v->mount, NULL, A_NONE, NULL);
         if (v->drive_name && g_strcmp0(v->drive_name, v->label)) madd(p, v->drive_name, NULL, A_NONE, NULL);
     }
-    if (!M.vols->len) madd(0, "No hay unidades extraíbles", NULL, A_NONE, NULL);
+    if (!M.vols->len) madd(0, _("No removable drives"), NULL, A_NONE, NULL);
     msep(0);
-    madd(0, "Montar todas", "drive-removable-media", any_unmounted ? A_MOUNT_ALL : A_NONE, NULL);
-    madd(0, "Desmontar todas", NULL, any_mounted ? A_UNMOUNT_ALL : A_NONE, NULL);
-    madd(0, "Expulsar todas", "media-eject", any_eject ? A_EJECT_ALL : A_NONE, NULL);
+    madd(0, _("Mount all"), "drive-removable-media", any_unmounted ? A_MOUNT_ALL : A_NONE, NULL);
+    madd(0, _("Unmount all"), NULL, any_mounted ? A_UNMOUNT_ALL : A_NONE, NULL);
+    madd(0, _("Eject all"), "media-eject", any_eject ? A_EJECT_ALL : A_NONE, NULL);
     msep(0);
-    MItem *pref = madd(0, "Preferencias", "preferences-system", A_NONE, NULL);
+    MItem *pref = madd(0, _("Settings"), "preferences-system", A_NONE, NULL);
     pref->enabled = TRUE; pref->submenu = TRUE;
-    mtoggle(pref->id, "Preguntar si montar al conectar un dispositivo", A_T_NOTIFY, M.notify_insert);
-    mtoggle(pref->id, "Preguntar si abrir el gestor de archivos al montar", A_T_ASKOPEN, M.ask_open);
-    mtoggle(pref->id, "Mostrar también discos internos", A_T_INTERNAL, M.show_internal);
-    mtoggle(pref->id, "Mostrar el icono aunque no haya unidades", A_T_ICON, M.always_icon);
-    madd(0, "Abrir panel", "view-list-details", A_PANEL, NULL);
-    madd(0, "Salir de Muelle", "application-exit", A_QUIT, NULL);
+    mtoggle(pref->id, _("Ask to mount when a device is plugged in"), A_T_NOTIFY, M.notify_insert);
+    mtoggle(pref->id, _("Ask to open the file manager after mounting"), A_T_ASKOPEN, M.ask_open);
+    mtoggle(pref->id, _("Also show internal disks"), A_T_INTERNAL, M.show_internal);
+    mtoggle(pref->id, _("Show the icon even with no drives"), A_T_ICON, M.always_icon);
+    madd(0, _("Open panel"), "view-list-details", A_PANEL, NULL);
+    madd(0, _("Quit Muelle"), "application-exit", A_QUIT, NULL);
 }
 
 static GVariant *mprops(MItem *m, const char *const *want)
@@ -1477,10 +1599,10 @@ static GVariant *mprops(MItem *m, const char *const *want)
         return g_variant_builder_end(&b);
     }
     if (m->label && WANT("label")) {
-        g_autofree char *esc = NULL;
-        /* dbusmenu usa '_' como mnemónico: se duplica para mostrarlo tal cual */
+        /* dbusmenu treats '_' as a mnemonic: double it to show it literally */
         char **parts = g_strsplit(m->label, "_", -1);
-        esc = g_strjoinv("__", parts); g_strfreev(parts);
+        g_autofree char *esc = g_strjoinv("__", parts);
+        g_strfreev(parts);
         g_variant_builder_add(&b, "{sv}", "label", g_variant_new_string(esc));
     }
     if (m->icon && WANT("icon-name")) g_variant_builder_add(&b, "{sv}", "icon-name", g_variant_new_string(m->icon));
@@ -1644,12 +1766,12 @@ static const char SNI_XML[] =
 
 static char *tooltip_body(void)
 {
-    if (!M.vols->len) return g_strdup("Sin unidades extraíbles");
+    if (!M.vols->len) return g_strdup(_("No removable drives"));
     GString *s = g_string_new(NULL);
     for (guint i = 0; i < M.vols->len; i++) {
         Vol *v = M.vols->pdata[i];
         g_string_append_printf(s, "%s%s: %s", i ? "\n" : "", v->label,
-                               v->mount ? v->mount : v->locked ? "bloqueado" : "sin montar");
+                               v->mount ? v->mount : v->locked ? _("locked") : _("not mounted"));
     }
     return g_string_free(s, FALSE);
 }
@@ -1683,10 +1805,10 @@ static void sni_method(GDBusConnection *c, const char *sender, const char *path,
     if (!strcmp(method, "Activate") || !strcmp(method, "SecondaryActivate")) {
         g_variant_get(p, "(ii)", &x, &y);
         if (!strcmp(method, "Activate")) panel_toggle(x, y);
-        else if (M.vols->len == 1) act_mount(M.vols->pdata[0], TRUE); /* clic central: abrir */
+        else if (M.vols->len == 1) act_mount(M.vols->pdata[0], TRUE); /* middle click: open */
         else panel_toggle(x, y);
     } else if (!strcmp(method, "ContextMenu")) {
-        /* El menú lo pinta la bandeja a partir de dbusmenu; por si no lo hace, panel. */
+        /* Trays draw the menu from dbusmenu; should one call this instead, show the panel. */
         g_variant_get(p, "(ii)", &x, &y);
         panel_toggle(x, y);
     }
@@ -1717,12 +1839,13 @@ static void sni_start(void)
     g_dbus_node_info_unref(sni); g_dbus_node_info_unref(menu);
     M.sni_name = g_strdup_printf("org.kde.StatusNotifierItem-%d-1", getpid());
     g_bus_own_name_on_connection(M.session, M.sni_name, G_BUS_NAME_OWNER_FLAGS_NONE, NULL, NULL, NULL, NULL);
+    /* registers now and again whenever the tray host restarts */
     g_bus_watch_name_on_connection(M.session, "org.kde.StatusNotifierWatcher", G_BUS_NAME_WATCHER_FLAGS_NONE,
                                    sni_register, NULL, NULL, NULL);
 }
 
 /* ======================================================================== */
-/* refresco y detección de cambios                                         */
+/* refresh and change detection                                             */
 
 static void update_all(void)
 {
@@ -1741,6 +1864,31 @@ static void update_all(void)
     }
 }
 
+static void notify_inserted(Vol *v)
+{
+    g_autofree char *sz = human_size(v->size);
+    GString *body = g_string_new(NULL);
+    if (v->drive_name && g_strcmp0(v->drive_name, v->label)) g_string_append_printf(body, "%s · ", v->drive_name);
+    g_string_append(body, sz);
+    if (v->locked) g_string_append_printf(body, " · %s", _("encrypted"));
+    else if (v->fstype) g_string_append_printf(body, " · %s", v->fstype);
+    g_string_append_printf(body, "\n%s", _("Mount it?"));
+    g_autofree char *sum = g_strdup_printf(_("Connected: %s"), v->label);
+    const char *acts[] = { "mount", _("Mount"), "mount-open", _("Mount & open"), NULL };
+    const char *acts_locked[] = { "mount", _("Unlock…"), NULL };
+    notify(N_INSERT, v->path, 0, v->icon, sum, body->str, 0,
+           (const char *const *)(v->locked ? acts_locked : acts));
+    g_string_free(body, TRUE);
+}
+
+static void notify_mounted(Vol *v)
+{
+    g_autofree char *sum = g_strdup_printf(_("Mounted: %s"), v->label);
+    g_autofree char *body = g_strdup_printf("%s\n%s", v->mount, _("Open it in the file manager?"));
+    const char *acts[] = { "open", _("Open"), NULL };
+    notify(N_OPEN, v->path, 0, v->icon, sum, body, 12000, (const char *const *)acts);
+}
+
 static gboolean refresh(gpointer d)
 {
     M.refresh_id = 0;
@@ -1751,30 +1899,16 @@ static gboolean refresh(gpointer d)
         g_hash_table_add(seen, v->path);
         gboolean is_new = !g_hash_table_contains(M.known, v->path);
         gboolean was_mounted = g_hash_table_contains(M.mounted, v->path);
-        if (M.baseline && is_new && v->removable && !v->mount && M.notify_insert) {
-            g_autofree char *sz = human_size(v->size);
-            g_autofree char *body = g_strdup_printf("%s%s%s · %s%s",
-                v->drive_name && g_strcmp0(v->drive_name, v->label) ? v->drive_name : "",
-                v->drive_name && g_strcmp0(v->drive_name, v->label) ? " · " : "", sz,
-                v->locked ? "cifrado" : v->fstype ? v->fstype : "", "\n¿Quieres montarlo?");
-            g_autofree char *sum = g_strdup_printf("Conectado: %s", v->label);
-            static const char *const acts[] = { "mount", "Montar", "mount-open", "Montar y abrir", NULL };
-            static const char *const acts_locked[] = { "mount", "Desbloquear…", NULL };
-            notify(N_INSERT, v->path, 0, v->icon, sum, body, 0, v->locked ? acts_locked : acts);
-        }
+        if (M.baseline && is_new && v->removable && !v->mount && M.notify_insert)
+            notify_inserted(v);
         if (M.baseline && v->mount && !was_mounted) {
             notify_close_for(v->path);
-            if (g_hash_table_remove(M.no_ask, v->path)) ; /* se abrió por petición expresa */
-            else if (M.ask_open) {
-                g_autofree char *sum = g_strdup_printf("Montado: %s", v->label);
-                g_autofree char *body = g_strdup_printf("%s\n¿Abrir en el gestor de archivos?", v->mount);
-                static const char *const acts[] = { "open", "Abrir", NULL };
-                notify(N_OPEN, v->path, 0, v->icon, sum, body, 12000, acts);
-            }
+            /* skip the question when the user asked to open it explicitly */
+            if (!g_hash_table_remove(M.no_ask, v->path) && M.ask_open) notify_mounted(v);
         }
         if (!v->mount && was_mounted) notify_close_for(v->path);
     }
-    /* olvidar lo que ha desaparecido */
+    /* forget what has disappeared */
     GHashTableIter it; gpointer k;
     g_hash_table_iter_init(&it, M.known);
     while (g_hash_table_iter_next(&it, &k, NULL))
@@ -1808,7 +1942,7 @@ static void schedule_refresh(void)
 static void on_ud_changed(void) { schedule_refresh(); }
 
 /* ======================================================================== */
-/* acciones                                                                 */
+/* actions                                                                  */
 
 static void do_action(int action, const char *path)
 {
@@ -1835,12 +1969,13 @@ static void do_action(int action, const char *path)
         for (guint i = 0; i < M.vols->len; i++) { Vol *x = M.vols->pdata[i]; if (x->mount) act_unmount(x); }
         break;
     case A_EJECT_ALL: {
-        /* una sola expulsión por dispositivo físico */
+        /* a single eject per physical device */
         GHashTable *done = g_hash_table_new(g_str_hash, g_str_equal);
         for (guint i = 0; i < M.vols->len; i++) {
             Vol *x = M.vols->pdata[i];
             if (!x->removable || (!x->drive && !x->loop)) continue;
-            if (x->drive && !g_hash_table_add(done, x->drive)) continue;
+            const char *dev = x->drive ? x->drive : x->loop;
+            if (!g_hash_table_add(done, (gpointer)dev)) continue;
             act_eject(x);
         }
         g_hash_table_unref(done);
@@ -1883,7 +2018,7 @@ static void on_notif_signal(GDBusConnection *c, const char *sender, const char *
 }
 
 /* ======================================================================== */
-/* arranque                                                                 */
+/* startup                                                                  */
 
 static void on_startup(GApplication *app, gpointer d)
 {
@@ -1899,7 +2034,7 @@ static void on_startup(GApplication *app, gpointer d)
     M.status = "Passive";
     config_load();
     css_load();
-    g_autofree char *cp = g_build_filename(g_get_user_config_dir(), "gtk-4.0", "colors.css", NULL);
+    g_autofree char *cp = css_colors_path();
     GFile *cf = g_file_new_for_path(cp);
     M.css_mon = g_file_monitor_file(cf, G_FILE_MONITOR_NONE, NULL, NULL);
     if (M.css_mon) g_signal_connect(M.css_mon, "changed", G_CALLBACK(on_css_changed), NULL);
@@ -1907,10 +2042,10 @@ static void on_startup(GApplication *app, gpointer d)
 
     M.session = g_object_ref(g_application_get_dbus_connection(app));
     M.system = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &e);
-    if (!M.system) g_error("sin bus del sistema: %s", e->message);
+    if (!M.system) g_error("no system bus: %s", e->message);
     M.ud = g_dbus_object_manager_client_new_sync(M.system, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
                                                  UD_NAME, "/org/freedesktop/UDisks2", NULL, NULL, NULL, NULL, &e);
-    if (!M.ud) { g_warning("UDisks2 no disponible: %s", e->message); g_clear_error(&e); }
+    if (!M.ud) { g_warning("UDisks2 is not available: %s", e->message); g_clear_error(&e); }
     else {
         g_signal_connect_swapped(M.ud, "object-added", G_CALLBACK(on_ud_changed), NULL);
         g_signal_connect_swapped(M.ud, "object-removed", G_CALLBACK(on_ud_changed), NULL);
@@ -1930,13 +2065,33 @@ static void on_startup(GApplication *app, gpointer d)
 static void on_activate(GApplication *app, gpointer d)
 {
     static gboolean first = TRUE;
-    if (first) { first = FALSE; return; } /* lanzamiento inicial: solo el icono */
-    panel_toggle(-1, -1);                 /* `muelle` de nuevo: abre/cierra el panel */
+    if (first) { first = FALSE; return; } /* initial launch: just the tray icon */
+    panel_toggle(-1, -1);                 /* running `muelle` again toggles the panel */
+}
+
+static int on_local_options(GApplication *app, GVariantDict *opts, gpointer d)
+{
+    if (g_variant_dict_contains(opts, "version")) {
+        printf("muelle %s\n", VERSION);
+        return 0;
+    }
+    return -1;
 }
 
 int main(int argc, char **argv)
 {
+    setlocale(LC_ALL, "");
+    const char *localedir = g_getenv("MUELLE_LOCALEDIR");
+    bindtextdomain(GETTEXT_PACKAGE, localedir ? localedir : LOCALEDIR);
+    bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
+    textdomain(GETTEXT_PACKAGE);
+
     M.app = gtk_application_new(APP_ID, G_APPLICATION_DEFAULT_FLAGS);
+    g_application_add_main_option(G_APPLICATION(M.app), "version", 'v', G_OPTION_FLAG_NONE,
+                                  G_OPTION_ARG_NONE, _("Print the version and exit"), NULL);
+    g_application_set_option_context_summary(G_APPLICATION(M.app),
+        _("Removable drives in the system tray. Run it again to toggle the panel."));
+    g_signal_connect(M.app, "handle-local-options", G_CALLBACK(on_local_options), NULL);
     g_signal_connect(M.app, "startup", G_CALLBACK(on_startup), NULL);
     g_signal_connect(M.app, "activate", G_CALLBACK(on_activate), NULL);
     int r = g_application_run(G_APPLICATION(M.app), argc, argv);
