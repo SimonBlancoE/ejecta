@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
-Name=Muelle
+Name=Ejecta
 GenericName=Removable Drives
 GenericName[es]=Unidades extraíbles
 Comment=Mount, open and safely eject USB drives from the system tray
 Comment[es]=Monta, abre y expulsa unidades USB desde la bandeja del sistema
-Exec=muelle
+Exec=ejecta
 Icon=drive-removable-media
 Categories=System;Utility;
 Keywords=usb;mount;unmount;eject;udisks;tray;

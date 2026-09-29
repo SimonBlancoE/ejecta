@@ -5,7 +5,7 @@ PartOf=graphical-session.target
 After=graphical-session.target
 
 [Service]
-ExecStart=@BINDIR@/muelle
+ExecStart=/home/octo/.local/bin/muelle
 Restart=on-failure
 
 [Install]

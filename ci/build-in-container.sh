@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs the build dependencies of a distribution and builds, checks and
-# stages Muelle. Used by CI; locally:
+# stages Ejecta. Used by CI; locally:
 #   podman run --rm -v "$PWD:/src:z" -w /src archlinux:latest sh ci/build-in-container.sh arch
 set -eu
 case "$1" in
@@ -18,6 +18,6 @@ case "$1" in
   *) echo "unknown distro: $1" >&2; exit 2 ;;
 esac > /dev/null
 make clean all CFLAGS="-O2 -Werror"
-./muelle --version
+./ejecta --version
 make DESTDIR=/tmp/stage PREFIX=/usr install
 find /tmp/stage -type f | sort

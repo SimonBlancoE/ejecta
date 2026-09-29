@@ -1,0 +1,12 @@
+[Unit]
+Description=Ejecta removable drives tray
+Documentation=https://github.com/SimonBlancoE/ejecta
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@BINDIR@/ejecta
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

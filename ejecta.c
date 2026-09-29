@@ -1,5 +1,5 @@
 /*
- * Muelle — removable drives in the system tray.
+ * Ejecta — removable drives in the system tray.
  *
  * A StatusNotifierItem (works with any SNI tray: Noctalia, Waybar, KDE…) with:
  *   - left click: a floating panel (layer-shell on Wayland) listing drives,
@@ -34,10 +34,10 @@
 #ifndef LOCALEDIR
 #define LOCALEDIR "/usr/local/share/locale"
 #endif
-#define GETTEXT_PACKAGE "muelle"
+#define GETTEXT_PACKAGE "ejecta"
 
-#define APP_ID      "io.github.SimonBlancoE.Muelle"
-#define APP_NAME    "Muelle"
+#define APP_ID      "io.github.SimonBlancoE.Ejecta"
+#define APP_NAME    "Ejecta"
 #define UD_NAME     "org.freedesktop.UDisks2"
 #define UD_IFACE(x) "org.freedesktop.UDisks2." x
 #define SNI_PATH    "/StatusNotifierItem"
@@ -248,17 +248,17 @@ static gboolean user_mount_point(const char *m)
 }
 
 /* ======================================================================== */
-/* settings (~/.config/muelle/muelle.ini)                                   */
+/* settings (~/.config/ejecta/ejecta.ini)                                   */
 
 static char *config_path(void)
 {
-    return g_build_filename(g_get_user_config_dir(), "muelle", "muelle.ini", NULL);
+    return g_build_filename(g_get_user_config_dir(), "ejecta", "ejecta.ini", NULL);
 }
 
 static gboolean kf_bool(GKeyFile *kf, const char *key, gboolean def)
 {
     GError *e = NULL;
-    gboolean b = g_key_file_get_boolean(kf, "muelle", key, &e);
+    gboolean b = g_key_file_get_boolean(kf, "ejecta", key, &e);
     if (e) { g_error_free(e); return def; }
     return b;
 }
@@ -271,13 +271,12 @@ static void config_load(void)
     g_autofree char *p = config_path();
     GKeyFile *kf = g_key_file_new();
     if (g_key_file_load_from_file(kf, p, G_KEY_FILE_NONE, NULL)) {
-        /* the Spanish keys are read for compatibility with early versions */
-        M.notify_insert = kf_bool(kf, "ask_to_mount", kf_bool(kf, "preguntar_montar", M.notify_insert));
-        M.ask_open      = kf_bool(kf, "ask_to_open", kf_bool(kf, "preguntar_abrir", M.ask_open));
-        M.show_internal = kf_bool(kf, "show_internal", kf_bool(kf, "mostrar_internas", M.show_internal));
-        M.always_icon   = kf_bool(kf, "always_show_icon", kf_bool(kf, "icono_siempre", M.always_icon));
-        M.panel_pos     = g_key_file_get_string(kf, "muelle", "panel_position", NULL);
-        M.file_manager  = g_key_file_get_string(kf, "muelle", "file_manager", NULL);
+        M.notify_insert = kf_bool(kf, "ask_to_mount", M.notify_insert);
+        M.ask_open      = kf_bool(kf, "ask_to_open", M.ask_open);
+        M.show_internal = kf_bool(kf, "show_internal", M.show_internal);
+        M.always_icon   = kf_bool(kf, "always_show_icon", M.always_icon);
+        M.panel_pos     = g_key_file_get_string(kf, "ejecta", "panel_position", NULL);
+        M.file_manager  = g_key_file_get_string(kf, "ejecta", "file_manager", NULL);
         if (M.file_manager) g_strstrip(M.file_manager);
     }
     if (!M.panel_pos) M.panel_pos = g_strdup("auto");
@@ -291,15 +290,15 @@ static void config_save(void)
     g_mkdir_with_parents(d, 0700);
     GKeyFile *kf = g_key_file_new();
     g_key_file_set_comment(kf, NULL, NULL,
-        " Muelle settings. The booleans can also be toggled from the tray menu.\n"
+        " Ejecta settings. The booleans can also be toggled from the tray menu.\n"
         " panel_position: auto | top-left | top-right | bottom-left | bottom-right\n"
         " file_manager: command to open folders with (empty = system default)", NULL);
-    g_key_file_set_boolean(kf, "muelle", "ask_to_mount", M.notify_insert);
-    g_key_file_set_boolean(kf, "muelle", "ask_to_open", M.ask_open);
-    g_key_file_set_boolean(kf, "muelle", "show_internal", M.show_internal);
-    g_key_file_set_boolean(kf, "muelle", "always_show_icon", M.always_icon);
-    g_key_file_set_string(kf, "muelle", "panel_position", M.panel_pos);
-    g_key_file_set_string(kf, "muelle", "file_manager", M.file_manager ? M.file_manager : "");
+    g_key_file_set_boolean(kf, "ejecta", "ask_to_mount", M.notify_insert);
+    g_key_file_set_boolean(kf, "ejecta", "ask_to_open", M.ask_open);
+    g_key_file_set_boolean(kf, "ejecta", "show_internal", M.show_internal);
+    g_key_file_set_boolean(kf, "ejecta", "always_show_icon", M.always_icon);
+    g_key_file_set_string(kf, "ejecta", "panel_position", M.panel_pos);
+    g_key_file_set_string(kf, "ejecta", "file_manager", M.file_manager ? M.file_manager : "");
     g_key_file_save_to_file(kf, p, NULL);
     g_key_file_free(kf);
 }
@@ -1323,11 +1322,11 @@ static void panel_build(void)
     gtk_window_set_decorated(M.win, FALSE);
     gtk_window_set_resizable(M.win, FALSE);
     gtk_window_set_hide_on_close(M.win, TRUE);
-    gtk_widget_add_css_class(GTK_WIDGET(M.win), "muelle");
+    gtk_widget_add_css_class(GTK_WIDGET(M.win), "ejecta");
     M.layer_ok = gtk_layer_is_supported();
     if (M.layer_ok) {
         gtk_layer_init_for_window(M.win);
-        gtk_layer_set_namespace(M.win, "muelle");
+        gtk_layer_set_namespace(M.win, "ejecta");
         gtk_layer_set_layer(M.win, LS_LAYER_TOP);
         gtk_layer_set_keyboard_mode(M.win, LS_KB_ON_DEMAND);
     }
@@ -1448,7 +1447,7 @@ static const char *CSS_BREEZE =
     "@define-color m_error @error_color_breeze;\n";
 
 static const char *CSS_RULES =
-    "window.muelle { background: transparent; }"
+    "window.ejecta { background: transparent; }"
     ".m-panel { background: @m_bg; color: @m_fg; border: 1px solid @m_border; border-radius: 18px;"
     "  padding: 14px; margin: 2px; }"
     ".m-title { font-weight: 800; font-size: 1.15em; margin-left: 4px; }"
@@ -1586,7 +1585,7 @@ static void menu_build(void)
     mtoggle(pref->id, _("Also show internal disks"), A_T_INTERNAL, M.show_internal);
     mtoggle(pref->id, _("Show the icon even with no drives"), A_T_ICON, M.always_icon);
     madd(0, _("Open panel"), "view-list-details", A_PANEL, NULL);
-    madd(0, _("Quit Muelle"), "application-exit", A_QUIT, NULL);
+    madd(0, _("Quit Ejecta"), "application-exit", A_QUIT, NULL);
 }
 
 static GVariant *mprops(MItem *m, const char *const *want)
@@ -1780,7 +1779,7 @@ static GVariant *sni_get_prop(GDBusConnection *c, const char *s, const char *p, 
                               const char *name, GError **e, gpointer d)
 {
     if (!strcmp(name, "Category")) return g_variant_new_string("Hardware");
-    if (!strcmp(name, "Id")) return g_variant_new_string("muelle");
+    if (!strcmp(name, "Id")) return g_variant_new_string("ejecta");
     if (!strcmp(name, "Title")) return g_variant_new_string(APP_NAME);
     if (!strcmp(name, "Status")) return g_variant_new_string(M.status);
     if (!strcmp(name, "WindowId")) return g_variant_new_int32(0);
@@ -2066,13 +2065,13 @@ static void on_activate(GApplication *app, gpointer d)
 {
     static gboolean first = TRUE;
     if (first) { first = FALSE; return; } /* initial launch: just the tray icon */
-    panel_toggle(-1, -1);                 /* running `muelle` again toggles the panel */
+    panel_toggle(-1, -1);                 /* running `ejecta` again toggles the panel */
 }
 
 static int on_local_options(GApplication *app, GVariantDict *opts, gpointer d)
 {
     if (g_variant_dict_contains(opts, "version")) {
-        printf("muelle %s\n", VERSION);
+        printf("ejecta %s\n", VERSION);
         return 0;
     }
     return -1;
@@ -2081,7 +2080,7 @@ static int on_local_options(GApplication *app, GVariantDict *opts, gpointer d)
 int main(int argc, char **argv)
 {
     setlocale(LC_ALL, "");
-    const char *localedir = g_getenv("MUELLE_LOCALEDIR");
+    const char *localedir = g_getenv("EJECTA_LOCALEDIR");
     bindtextdomain(GETTEXT_PACKAGE, localedir ? localedir : LOCALEDIR);
     bind_textdomain_codeset(GETTEXT_PACKAGE, "UTF-8");
     textdomain(GETTEXT_PACKAGE);

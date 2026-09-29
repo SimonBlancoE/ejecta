@@ -1,14 +1,14 @@
 # SOME DESCRIPTIVE TITLE.
 # Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the muelle package.
+# This file is distributed under the same license as the ejecta package.
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 #
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: muelle 0.1.0\n"
+"Project-Id-Version: ejecta 0.1.0\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-29 16:20+0200\n"
+"POT-Creation-Date: 2026-09-29 17:00+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -18,80 +18,80 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
-#: muelle.c:386
+#: ejecta.c:396
 #, c-format
 msgid "%s Encrypted Volume"
 msgstr ""
 
-#: muelle.c:387
+#: ejecta.c:397
 #, c-format
 msgid "%s Volume"
 msgstr ""
 
-#: muelle.c:496
+#: ejecta.c:506
 msgid "The device is in use: close the programs and windows using it."
 msgstr ""
 
-#: muelle.c:498
+#: ejecta.c:508
 msgid "Authorization cancelled."
 msgstr ""
 
-#: muelle.c:501
+#: ejecta.c:511
 msgid "You are not allowed to do this."
 msgstr ""
 
-#: muelle.c:503
+#: ejecta.c:513
 msgid "Wrong passphrase."
 msgstr ""
 
-#: muelle.c:679
+#: ejecta.c:689
 #, c-format
 msgid "open file: %s"
 msgstr ""
 
-#: muelle.c:681
+#: ejecta.c:691
 #, c-format
 msgid "%d open file (%s…)"
 msgid_plural "%d open files (%s…)"
 msgstr[0] ""
 msgstr[1] ""
 
-#: muelle.c:682
+#: ejecta.c:692
 msgid "working directory is on the drive"
 msgstr ""
 
-#: muelle.c:683
+#: ejecta.c:693
 msgid "running from the drive"
 msgstr ""
 
-#: muelle.c:684
+#: ejecta.c:694
 msgid "has a file from the drive loaded in memory"
 msgstr ""
 
 #. TRANSLATORS: %s is a list like "foo (PID 12), bar (PID 34)"
-#: muelle.c:768
+#: ejecta.c:778
 #, c-format
 msgid "%s: they belong to another user or to the system."
 msgstr ""
 
-#: muelle.c:769
+#: ejecta.c:779
 msgid "Some processes could not be closed"
 msgstr ""
 
-#: muelle.c:786
+#: ejecta.c:796
 #, c-format
 msgid "None of your processes is using “%s”."
 msgstr ""
 
-#: muelle.c:787
+#: ejecta.c:797
 msgid "Nothing to close"
 msgstr ""
 
-#: muelle.c:798
+#: ejecta.c:808
 msgid "It is being used by:"
 msgstr ""
 
-#: muelle.c:804
+#: ejecta.c:814
 #, c-format
 msgid ""
 "\n"
@@ -102,361 +102,361 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: muelle.c:806
+#: ejecta.c:816
 msgid ""
 "None of your processes is using it: it may be a system process or another "
 "user's (an indexer, a backup…)."
 msgstr ""
 
-#: muelle.c:810
+#: ejecta.c:820
 #, c-format
 msgid "In use by %u process: see the list in the details."
 msgid_plural "In use by %u processes: see the list in the details."
 msgstr[0] ""
 msgstr[1] ""
 
-#: muelle.c:812
+#: ejecta.c:822
 msgid "In use by a process that isn't yours (system or another user)."
 msgstr ""
 
-#: muelle.c:814
+#: ejecta.c:824
 #, c-format
 msgid "Can't eject “%s”"
 msgstr ""
 
-#: muelle.c:814
+#: ejecta.c:824
 #, c-format
 msgid "Can't unmount “%s”"
 msgstr ""
 
-#: muelle.c:815
+#: ejecta.c:825
 msgid "Close processes and retry"
 msgstr ""
 
-#: muelle.c:815 muelle.c:816
+#: ejecta.c:825 ejecta.c:826
 msgid "Show details"
 msgstr ""
 
-#: muelle.c:816
+#: ejecta.c:826
 msgid "Retry"
 msgstr ""
 
-#: muelle.c:838
+#: ejecta.c:848
 #, c-format
 msgid "“%s” can now be safely removed."
 msgstr ""
 
-#: muelle.c:839
+#: ejecta.c:849
 msgid "Device ejected"
 msgstr ""
 
-#: muelle.c:934
+#: ejecta.c:944
 #, c-format
 msgid "“%s” is not in use: you can remove it."
 msgstr ""
 
-#: muelle.c:935
+#: ejecta.c:945
 msgid "Ready to remove"
 msgstr ""
 
-#: muelle.c:1039
+#: ejecta.c:1049
 msgid "SD card reader"
 msgstr ""
 
-#: muelle.c:1062
+#: ejecta.c:1072
 msgid "Processes using this device"
 msgstr ""
 
-#: muelle.c:1066
+#: ejecta.c:1076
 msgid "Look again"
 msgstr ""
 
-#: muelle.c:1074
+#: ejecta.c:1084
 msgid "None of your processes is using it."
 msgstr ""
 
-#: muelle.c:1087
+#: ejecta.c:1097
 msgid "Close"
 msgstr ""
 
-#: muelle.c:1090
+#: ejecta.c:1100
 msgid "Asks the process to quit; if it doesn't within 3 s, it is forced"
 msgstr ""
 
-#: muelle.c:1098
+#: ejecta.c:1108
 msgid "Close all"
 msgstr ""
 
-#: muelle.c:1099
+#: ejecta.c:1109
 msgid "Asks them all to quit; the ones still running after 3 s are forced"
 msgstr ""
 
-#: muelle.c:1126 muelle.c:1537
+#: ejecta.c:1136 ejecta.c:1549
 msgid "working…"
 msgstr ""
 
-#: muelle.c:1126
+#: ejecta.c:1136
 msgid "encrypted, locked"
 msgstr ""
 
-#: muelle.c:1127 muelle.c:1537
+#: ejecta.c:1137 ejecta.c:1549
 msgid "mounted"
 msgstr ""
 
-#: muelle.c:1127 muelle.c:1761
+#: ejecta.c:1137 ejecta.c:1773
 msgid "not mounted"
 msgstr ""
 
-#: muelle.c:1137
+#: ejecta.c:1147
 msgid "Details"
 msgstr ""
 
-#: muelle.c:1150
+#: ejecta.c:1160
 msgid "Unlock"
 msgstr ""
 
-#: muelle.c:1151
+#: ejecta.c:1161
 msgid "Ask for the passphrase, unlock and mount"
 msgstr ""
 
-#: muelle.c:1153 muelle.c:1875
+#: ejecta.c:1163 ejecta.c:1887
 msgid "Open"
 msgstr ""
 
-#: muelle.c:1154 muelle.c:1547
+#: ejecta.c:1164 ejecta.c:1559
 msgid "Open in the file manager"
 msgstr ""
 
-#: muelle.c:1155
+#: ejecta.c:1165
 msgid "Unmount"
 msgstr ""
 
-#: muelle.c:1156
+#: ejecta.c:1166
 msgid ""
 "Closes the volume (its files stop being accessible) but the device stays "
 "connected and powered"
 msgstr ""
 
-#: muelle.c:1159 muelle.c:1552 muelle.c:1864
+#: ejecta.c:1169 ejecta.c:1564 ejecta.c:1876
 msgid "Mount"
 msgstr ""
 
-#: muelle.c:1159
+#: ejecta.c:1169
 msgid "Make the files accessible"
 msgstr ""
 
-#: muelle.c:1160 muelle.c:1864
+#: ejecta.c:1170 ejecta.c:1876
 msgid "Mount & open"
 msgstr ""
 
-#: muelle.c:1161
+#: ejecta.c:1171
 msgid "Mount and open in the file manager"
 msgstr ""
 
-#: muelle.c:1164
+#: ejecta.c:1174
 msgid "Eject"
 msgstr ""
 
-#: muelle.c:1165
+#: ejecta.c:1175
 msgid ""
 "Unmounts everything on the device and powers it off so you can remove it "
 "safely"
 msgstr ""
 
 #. TRANSLATORS: "<free> free of <total>  ·  <mount point>"
-#: muelle.c:1183
+#: ejecta.c:1195
 #, c-format
 msgid "%s free of %s  ·  %s"
 msgstr ""
 
-#: muelle.c:1194
+#: ejecta.c:1206
 msgid "Passphrase, then Enter"
 msgstr ""
 
-#: muelle.c:1219
+#: ejecta.c:1231
 msgid "Device"
 msgstr ""
 
-#: muelle.c:1220
+#: ejecta.c:1232
 msgid "Connection"
 msgstr ""
 
-#: muelle.c:1220
+#: ejecta.c:1232
 msgid "Disk image (loop)"
 msgstr ""
 
-#: muelle.c:1221
+#: ejecta.c:1233
 msgid "Path"
 msgstr ""
 
-#: muelle.c:1222
+#: ejecta.c:1234
 msgid "Mounted at"
 msgstr ""
 
-#: muelle.c:1223
+#: ejecta.c:1235
 msgid "Filesystem"
 msgstr ""
 
-#: muelle.c:1225
+#: ejecta.c:1237
 msgid "Serial number"
 msgstr ""
 
-#: muelle.c:1226
+#: ejecta.c:1238
 msgid "Size"
 msgstr ""
 
-#: muelle.c:1227
+#: ejecta.c:1239
 msgid "Encryption"
 msgstr ""
 
-#: muelle.c:1228
+#: ejecta.c:1240
 msgid "LUKS, locked"
 msgstr ""
 
-#: muelle.c:1228
+#: ejecta.c:1240
 msgid "LUKS, unlocked"
 msgstr ""
 
-#: muelle.c:1229
+#: ejecta.c:1241
 msgid "Access"
 msgstr ""
 
-#: muelle.c:1229
+#: ejecta.c:1241
 msgid "Read-only"
 msgstr ""
 
-#: muelle.c:1233
+#: ejecta.c:1245
 msgid "Copy path"
 msgstr ""
 
-#: muelle.c:1261
+#: ejecta.c:1273
 msgid "No removable drives connected"
 msgstr ""
 
-#: muelle.c:1327
+#: ejecta.c:1339
 msgid "Drives"
 msgstr ""
 
-#: muelle.c:1331
+#: ejecta.c:1343
 msgid "Eject all removable drives"
 msgstr ""
 
-#: muelle.c:1345
+#: ejecta.c:1357
 msgid ""
 "Unmount closes the volume; the device stays connected. Eject (⏏) unmounts "
 "everything and powers it off: then you can pull it out."
 msgstr ""
 
-#: muelle.c:1537 muelle.c:1761
+#: ejecta.c:1549 ejecta.c:1773
 msgid "locked"
 msgstr ""
 
-#: muelle.c:1545
+#: ejecta.c:1557
 msgid "Operation in progress…"
 msgstr ""
 
-#: muelle.c:1546
+#: ejecta.c:1558
 msgid "Unlock and mount…"
 msgstr ""
 
-#: muelle.c:1549
+#: ejecta.c:1561
 msgid "Unmount (stays connected)"
 msgstr ""
 
-#: muelle.c:1550
+#: ejecta.c:1562
 msgid "Copy mount path"
 msgstr ""
 
-#: muelle.c:1554
+#: ejecta.c:1566
 msgid "Lock"
 msgstr ""
 
-#: muelle.c:1555
+#: ejecta.c:1567
 msgid "Eject to remove it"
 msgstr ""
 
-#: muelle.c:1557
+#: ejecta.c:1569
 msgid "Show details in the panel"
 msgstr ""
 
-#: muelle.c:1558
+#: ejecta.c:1570
 msgid "Close the processes using it"
 msgstr ""
 
-#: muelle.c:1563 muelle.c:1756
+#: ejecta.c:1575 ejecta.c:1768
 msgid "No removable drives"
 msgstr ""
 
-#: muelle.c:1565
+#: ejecta.c:1577
 msgid "Mount all"
 msgstr ""
 
-#: muelle.c:1566
+#: ejecta.c:1578
 msgid "Unmount all"
 msgstr ""
 
-#: muelle.c:1567
+#: ejecta.c:1579
 msgid "Eject all"
 msgstr ""
 
-#: muelle.c:1569
+#: ejecta.c:1581
 msgid "Settings"
 msgstr ""
 
-#: muelle.c:1571
+#: ejecta.c:1583
 msgid "Ask to mount when a device is plugged in"
 msgstr ""
 
-#: muelle.c:1572
+#: ejecta.c:1584
 msgid "Ask to open the file manager after mounting"
 msgstr ""
 
-#: muelle.c:1573
+#: ejecta.c:1585
 msgid "Also show internal disks"
 msgstr ""
 
-#: muelle.c:1574
+#: ejecta.c:1586
 msgid "Show the icon even with no drives"
 msgstr ""
 
-#: muelle.c:1575
+#: ejecta.c:1587
 msgid "Open panel"
 msgstr ""
 
-#: muelle.c:1576
-msgid "Quit Muelle"
+#: ejecta.c:1588
+msgid "Quit Ejecta"
 msgstr ""
 
-#: muelle.c:1860
+#: ejecta.c:1872
 msgid "encrypted"
 msgstr ""
 
-#: muelle.c:1862
+#: ejecta.c:1874
 msgid "Mount it?"
 msgstr ""
 
-#: muelle.c:1863
+#: ejecta.c:1875
 #, c-format
 msgid "Connected: %s"
 msgstr ""
 
-#: muelle.c:1865
+#: ejecta.c:1877
 msgid "Unlock…"
 msgstr ""
 
-#: muelle.c:1873
+#: ejecta.c:1885
 #, c-format
 msgid "Mounted: %s"
 msgstr ""
 
-#: muelle.c:1874
+#: ejecta.c:1886
 msgid "Open it in the file manager?"
 msgstr ""
 
-#: muelle.c:2078
+#: ejecta.c:2090
 msgid "Print the version and exit"
 msgstr ""
 
-#: muelle.c:2080
+#: ejecta.c:2092
 msgid "Removable drives in the system tray. Run it again to toggle the panel."
 msgstr ""

@@ -1,12 +1,12 @@
 <div align="center">
 
-# Muelle
+# Ejecta
 
 **Removable drives in your system tray, done right.**<br>
 Mount, open and safely eject USB drives — and when something is holding a
-drive busy, Muelle tells you *what* it is and closes it for you.
+drive busy, Ejecta tells you *what* it is and closes it for you.
 
-<img src="docs/screenshots/panel.png" width="440" alt="Muelle's panel listing three drives: a mounted one with its usage bar, an unmounted one and a locked encrypted volume">
+<img src="docs/screenshots/panel.png" width="440" alt="Ejecta's panel listing three drives: a mounted one with its usage bar, an unmounted one and a locked encrypted volume">
 
 </div>
 
@@ -17,7 +17,7 @@ drive busy, Muelle tells you *what* it is and closes it for you.
 You click *eject* and get the dreaded *target is busy*. Somewhere a terminal
 is sitting in that folder, a video player still has a file open, or a
 forgotten `python -m http.server` is serving from it. Most tray tools stop at
-the error. Muelle keeps going:
+the error. Ejecta keeps going:
 
 <p align="center">
   <img src="docs/screenshots/busy-notification.png" width="450" alt="Notification: Can't eject PHOTOS. It is being used by python3 (PID 402149): working directory is on the drive; tail (PID 402150): open file: notes.txt. Buttons: Close processes and retry, Show details">
@@ -83,14 +83,14 @@ Prefer to pick? The panel lists them with a **Close** button each.
 | Debian 13 / Ubuntu 25.04+ | `sudo apt install gcc make libgtk-4-dev libgtk4-layer-shell-dev gettext pkg-config` |
 | openSUSE Tumbleweed   | `sudo zypper install gcc make gtk4-devel gtk4-layer-shell-devel gettext-tools` |
 
-Ubuntu 24.04 has no gtk4-layer-shell: drop that package and Muelle builds
+Ubuntu 24.04 has no gtk4-layer-shell: drop that package and Ejecta builds
 anyway, with the panel as a normal window.
 
 ### Build and install
 
 ```sh
-git clone https://github.com/SimonBlancoE/muelle.git
-cd muelle
+git clone https://github.com/SimonBlancoE/ejecta.git
+cd ejecta
 make
 sudo make install            # to /usr/local
 # or, just for you:
@@ -104,24 +104,24 @@ starts `graphical-session.target`: KDE, GNOME, and niri/Hyprland/sway under
 UWSM or similar):
 
 ```sh
-systemctl --user enable --now muelle.service
+systemctl --user enable --now ejecta.service
 ```
 
 …or launch it from your compositor's config:
 
 ```text
-niri:      spawn-at-startup "muelle"
-Hyprland:  exec-once = muelle
-sway:      exec muelle
+niri:      spawn-at-startup "ejecta"
+Hyprland:  exec-once = ejecta
+sway:      exec ejecta
 ```
 
-Only one instance ever runs. Running `muelle` again opens or closes the
+Only one instance ever runs. Running `ejecta` again opens or closes the
 panel, so you can bind it to a key.
 
 ## Settings
 
 The toggles live in the right-click menu under **Settings**. All of them,
-plus a couple more, are in `~/.config/muelle/muelle.ini`:
+plus a couple more, are in `~/.config/ejecta/ejecta.ini`:
 
 | Key                | Default | What it does |
 |--------------------|---------|--------------|
@@ -134,7 +134,7 @@ plus a couple more, are in `~/.config/muelle/muelle.ini`:
 
 ## How “close the processes” works
 
-To find who is using a drive, Muelle reads `/proc`: every process's open file
+To find who is using a drive, Ejecta reads `/proc`: every process's open file
 descriptors, working directory, executable and memory maps, matched against
 the drive's mount points. That is what `fuser -m` does, without shelling out.
 
@@ -152,19 +152,20 @@ the drive's mount points. That is what `fuser -m` does, without shelling out.
 Strings live in `po/`. To add a language:
 
 ```sh
-make pot                                   # refresh po/muelle.pot
-msginit -i po/muelle.pot -o po/fr.po -l fr
+make pot                                   # refresh po/ejecta.pot
+msginit -i po/ejecta.pot -o po/fr.po -l fr
 # translate po/fr.po, then:
 make && make run                           # run from the tree with translations
 ```
 
 Pull requests are welcome.
 
-## Why “Muelle”?
+## Why “Ejecta”?
 
-*Muelle* is Spanish for a dock or pier: the place where things are loaded
-and unloaded. It's also where this started: a friendlier replacement for
-[udiskie](https://github.com/coldfix/udiskie) on a niri + Noctalia desktop.
+*Ejecta* is the material a volcano or an impact throws out, which is more or
+less what this does to your USB drives. It started life as a friendlier
+replacement for [udiskie](https://github.com/coldfix/udiskie) on a
+niri + Noctalia desktop.
 
 ## License
 

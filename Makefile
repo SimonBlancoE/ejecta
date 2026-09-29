@@ -4,7 +4,7 @@ BINDIR  ?= $(PREFIX)/bin
 DATADIR ?= $(PREFIX)/share
 LOCALEDIR ?= $(DATADIR)/locale
 SYSTEMDUSERUNITDIR ?= $(DATADIR)/systemd/user
-APP_ID  := io.github.SimonBlancoE.Muelle
+APP_ID  := io.github.SimonBlancoE.Ejecta
 
 CC      ?= cc
 CFLAGS  ?= -O2 -pipe
@@ -32,47 +32,47 @@ else
 endif
 
 LINGUAS := $(basename $(notdir $(wildcard po/*.po)))
-MOS     := $(foreach l,$(LINGUAS),locale/$(l)/LC_MESSAGES/muelle.mo)
+MOS     := $(foreach l,$(LINGUAS),locale/$(l)/LC_MESSAGES/ejecta.mo)
 
-all: muelle $(MOS)
+all: ejecta $(MOS)
 
 # Rebuild when the flags change (e.g. a different PREFIX at install time).
 FLAGS = $(M_CPPFLAGS) $(CPPFLAGS) $(M_CFLAGS) $(CFLAGS) $(LDFLAGS) $(M_LDLIBS) $(LDLIBS)
 .build-flags: FORCE
 	@echo '$(FLAGS)' | cmp -s - $@ || echo '$(FLAGS)' > $@
 
-muelle: muelle.c .build-flags
+ejecta: ejecta.c .build-flags
 	$(CC) $(M_CPPFLAGS) $(CPPFLAGS) $(M_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $< $(M_LDLIBS) $(LDLIBS)
 
-locale/%/LC_MESSAGES/muelle.mo: po/%.po
+locale/%/LC_MESSAGES/ejecta.mo: po/%.po
 	@mkdir -p $(dir $@)
 	msgfmt --check -o $@ $<
 
 # Regenerate the template and merge it into the translations.
 pot:
-	xgettext --from-code=UTF-8 --add-comments=TRANSLATORS -k_ -kN_ --package-name=muelle \
-	  --package-version=$(VERSION) -o po/muelle.pot muelle.c
-	for po in po/*.po; do msgmerge --update --backup=none $$po po/muelle.pot; done
+	xgettext --from-code=UTF-8 --add-comments=TRANSLATORS -k_ -kN_ --package-name=ejecta \
+	  --package-version=$(VERSION) -o po/ejecta.pot ejecta.c
+	for po in po/*.po; do msgmerge --update --backup=none $$po po/ejecta.pot; done
 
 # Run from the source tree with translations.
 run: all
-	MUELLE_LOCALEDIR=$(CURDIR)/locale ./muelle
+	EJECTA_LOCALEDIR=$(CURDIR)/locale ./ejecta
 
 install: all
-	install -Dm755 muelle $(DESTDIR)$(BINDIR)/muelle
+	install -Dm755 ejecta $(DESTDIR)$(BINDIR)/ejecta
 	install -Dm644 data/$(APP_ID).desktop $(DESTDIR)$(DATADIR)/applications/$(APP_ID).desktop
-	sed 's|@BINDIR@|$(BINDIR)|' data/muelle.service.in > muelle.service
-	install -Dm644 muelle.service $(DESTDIR)$(SYSTEMDUSERUNITDIR)/muelle.service
+	sed 's|@BINDIR@|$(BINDIR)|' data/ejecta.service.in > ejecta.service
+	install -Dm644 ejecta.service $(DESTDIR)$(SYSTEMDUSERUNITDIR)/ejecta.service
 	for l in $(LINGUAS); do \
-	  install -Dm644 locale/$$l/LC_MESSAGES/muelle.mo $(DESTDIR)$(LOCALEDIR)/$$l/LC_MESSAGES/muelle.mo; \
+	  install -Dm644 locale/$$l/LC_MESSAGES/ejecta.mo $(DESTDIR)$(LOCALEDIR)/$$l/LC_MESSAGES/ejecta.mo; \
 	done
 
 uninstall:
-	rm -f $(DESTDIR)$(BINDIR)/muelle $(DESTDIR)$(DATADIR)/applications/$(APP_ID).desktop \
-	      $(DESTDIR)$(SYSTEMDUSERUNITDIR)/muelle.service
-	for l in $(LINGUAS); do rm -f $(DESTDIR)$(LOCALEDIR)/$$l/LC_MESSAGES/muelle.mo; done
+	rm -f $(DESTDIR)$(BINDIR)/ejecta $(DESTDIR)$(DATADIR)/applications/$(APP_ID).desktop \
+	      $(DESTDIR)$(SYSTEMDUSERUNITDIR)/ejecta.service
+	for l in $(LINGUAS); do rm -f $(DESTDIR)$(LOCALEDIR)/$$l/LC_MESSAGES/ejecta.mo; done
 
 clean:
-	rm -rf muelle muelle.service locale .build-flags
+	rm -rf ejecta ejecta.service locale .build-flags
 
 .PHONY: all pot run install uninstall clean FORCE
